@@ -1,0 +1,23 @@
+[
+    {
+        "sorteo": "gordo",
+        "fichero": "gordo.csv",
+        "columnas": ["Fecha", "Bola1", "Bola2", "Bola3", "Bola4", "Bola5", "Clave"],
+        "numeros": ["Bola1", "Bola2", "Bola3", "Bola4", "Bola5"],
+        "numeros_especiales": ["Clave"]
+    },
+    {
+        "sorteo": "euromilones",
+        "fichero": "euromillones.csv",
+        "columnas": ["Fecha", "Bola1", "Bola2", "Bola3", "Bola4", "Bola5", "Estrella1", "Estrella2"],
+        "numeros": ["Bola1", "Bola2", "Bola3", "Bola4", "Bola5"],
+        "numeros_especiales": ["Estrella1", "Estrella2"]
+    },
+    {
+        "sorteo": "primitiva",
+        "fichero": "primitiva.csv",
+        "columnas": ["Fecha", "Bola1", "Bola2", "Bola3", "Bola4", "Bola5", "Bola6", "Complementario", "Reintegro"],
+        "numeros": ["Bola1", "Bola2", "Bola3", "Bola4", "Bola5", "Bola6"],
+        "numeros_especiales": ["Complementario", "Reintegro"]
+    }
+]
