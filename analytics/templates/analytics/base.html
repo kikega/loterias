@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Analítica de Loterías{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' }
+                    }
+                }
+            }
+        }
+    </script>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen">
+    <nav class="bg-primary-700 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex items-center justify-between h-16">
+                <a href="{% url 'dashboard' %}" class="font-bold text-xl tracking-tight">
+                    Loterías
+                </a>
+                <div class="flex items-center space-x-4">
+                    {% if user.is_authenticated %}
+                    <a href="{% url 'dashboard' %}" class="hover:bg-primary-600 px-3 py-2 rounded text-sm font-medium transition">
+                        Dashboard
+                    </a>
+                    <a href="{% url 'insertar_sorteo' %}" class="hover:bg-primary-600 px-3 py-2 rounded text-sm font-medium transition">
+                        + Nuevo Sorteo
+                    </a>
+                    <span class="text-primary-200 text-sm hidden sm:inline">|</span>
+                    <span class="text-primary-100 text-sm font-semibold hidden sm:inline">Hola, {{ user.username }}</span>
+                    <a href="{% url 'logout' %}" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-sm font-medium transition shadow-md">
+                        Cerrar Sesión
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="text-center text-gray-400 text-xs py-4 border-t">
+        &copy; {% now "Y" %} — Herramienta educativa de análisis estadístico
+    </footer>
+</body>
+</html>

@@ -1,0 +1,68 @@
+{% extends "analytics/base.html" %}
+{% load static %}
+
+{% block title %}Dashboard — {{ tipo_activo|capfirst }}{% endblock %}
+
+{% block content %}
+<div class="flex flex-wrap items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold text-gray-800">Dashboard de Análisis</h1>
+    <div class="flex flex-wrap gap-2">
+        {% for t in tipos %}
+        <a href="?tipo={{ t }}"
+           class="px-4 py-2 rounded text-sm font-medium transition
+                  {% if t == tipo_activo %}
+                      bg-primary-600 text-white shadow
+                  {% else %}
+                      bg-white text-gray-600 border hover:bg-primary-50
+                  {% endif %}">
+            {{ t|capfirst }}
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Loader con HTMX que solicita el contenido asíncronamente y muestra un spinner con texto de progreso dinámico -->
+<div id="dashboard-container"
+     hx-get="{% url 'dashboard_content' %}?tipo={{ tipo_activo }}"
+     hx-trigger="load"
+     hx-swap="outerHTML">
+    
+    <div class="bg-white border border-gray-100 rounded-2xl shadow-xl p-12 flex flex-col items-center justify-center min-h-[400px] text-center relative overflow-hidden">
+        <!-- Spinner circular de alta estética -->
+        <div class="relative w-20 h-20 mb-6">
+            <div class="absolute inset-0 rounded-full border-4 border-primary-100"></div>
+            <div class="absolute inset-0 rounded-full border-4 border-t-primary-600 border-r-primary-500 animate-spin"></div>
+        </div>
+
+        <h3 class="text-xl font-bold text-gray-800 mb-2">Procesando Análisis</h3>
+        <p id="loader-status" class="text-sm text-gray-500 animate-pulse transition-all duration-300">
+            Conectando con la base de datos...
+        </p>
+
+        <!-- Script simple de stepping messages para amenizar la espera -->
+        <script>
+            (function() {
+                const messages = [
+                    "Cargando sorteos desde PostgreSQL...",
+                    "Analizando frecuencias de números...",
+                    "Buscando combinaciones y tríos frecuentes...",
+                    "Construyendo matrices de Markov...",
+                    "Evaluando tendencias temporales...",
+                    "Cargando predicciones del modelo LSTM...",
+                    "Renderizando interfaz analítica..."
+                ];
+                let index = 0;
+                const statusEl = document.getElementById("loader-status");
+                const interval = setInterval(() => {
+                    if (statusEl) {
+                        statusEl.innerText = messages[index];
+                        index = (index + 1) % messages.length;
+                    } else {
+                        clearInterval(interval);
+                    }
+                }, 750);
+            })();
+        </script>
+    </div>
+</div>
+{% endblock %}

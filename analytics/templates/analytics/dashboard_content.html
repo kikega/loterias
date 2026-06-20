@@ -1,0 +1,181 @@
+{% if total_sorteos == 0 %}
+<div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded shadow-sm">
+    <p class="font-medium text-yellow-800">Sin datos para {{ tipo_activo|capfirst }}</p>
+    <p class="text-sm text-yellow-700">Carga sorteos desde CSV o inserta manualmente.</p>
+</div>
+{% else %}
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-primary-500">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Total sorteos</p>
+        <p class="text-3xl font-bold text-primary-700">{{ total_sorteos }}</p>
+    </div>
+    {% if indice_tendencia %}
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-amber-500">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Top tendencia</p>
+        <p class="text-3xl font-bold text-amber-700">{{ indice_tendencia.0.Numero|default:"-" }}</p>
+    </div>
+    {% endif %}
+    {% if lstm_top %}
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-emerald-500">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">LSTM Top 1</p>
+        <p class="text-3xl font-bold text-emerald-700">{{ lstm_top.0.numero }}</p>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-violet-500">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">LSTM prob</p>
+        <p class="text-3xl font-bold text-violet-700">{{ lstm_top.0.probabilidad }}</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Últimos 10 Sorteos -->
+<div class="bg-white rounded-xl shadow p-5 mb-8">
+    <h2 class="text-lg font-semibold mb-4 text-gray-700">Últimos 10 Sorteos Registrados</h2>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-gray-100 text-gray-600 uppercase text-xs">
+                    <th class="text-left p-3">Fecha</th>
+                    <th class="text-left p-3">Bolas Principales</th>
+                    {% if ultimos_sorteos.0.especiales %}
+                    <th class="text-left p-3">Especiales</th>
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for sorteo in ultimos_sorteos %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="p-3 font-semibold text-gray-700 whitespace-nowrap">
+                        {{ sorteo.fecha|date:"d/m/Y" }}
+                    </td>
+                    <td class="p-3">
+                        <div class="flex flex-wrap gap-2">
+                            {% for bola in sorteo.bolas %}
+                            <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-primary-100 text-primary-800 font-bold text-xs shadow-sm">
+                                {{ bola }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </td>
+                    {% if sorteo.especiales %}
+                    <td class="p-3">
+                        <div class="flex flex-wrap gap-2">
+                            {% for esp in sorteo.especiales %}
+                            <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 text-amber-800 font-bold text-xs shadow-sm border border-amber-200">
+                                {{ esp }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="3" class="p-4 text-center text-gray-400">Sin sorteos registrados</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <div class="bg-white rounded-xl shadow p-5">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">Frecuencia de Números</h2>
+        <div class="overflow-x-auto max-h-80 overflow-y-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gray-100 text-gray-600 uppercase text-xs">
+                        <th class="text-left p-2">Número</th>
+                        <th class="text-right p-2">Frecuencia</th>
+                        <th class="text-right p-2">Probabilidad</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in frecuencias %}
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="p-2 font-medium">{{ row.Numero }}</td>
+                        <td class="p-2 text-right">{{ row.Frecuencia }}</td>
+                        <td class="p-2 text-right">{{ row.Probabilidad_pct }}%</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="p-4 text-center text-gray-400">Sin datos</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow p-5">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">Índice de Tendencia</h2>
+        <div class="overflow-x-auto max-h-80 overflow-y-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gray-100 text-gray-600 uppercase text-xs">
+                        <th class="text-left p-2">#</th>
+                        <th class="text-right p-2">Índice</th>
+                        <th class="text-right p-2">Urgencia</th>
+                        <th class="text-right p-2">Días</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in indice_tendencia %}
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="p-2 font-medium">{{ row.Numero }}</td>
+                        <td class="p-2 text-right">{{ row.Indice|floatformat:3 }}</td>
+                        <td class="p-2 text-right">{{ row.Urgencia|floatformat:2 }}</td>
+                        <td class="p-2 text-right">{{ row.Dias_Sin_Salir }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="p-4 text-center text-gray-400">Sin datos</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <div class="bg-white rounded-xl shadow p-5">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">Predicción LSTM</h2>
+        <div class="space-y-2">
+            {% for row in lstm_top|slice:":15" %}
+            <div class="flex items-center">
+                <span class="w-8 text-sm font-bold text-gray-600">{{ row.numero }}</span>
+                <div class="flex-1 bg-gray-200 rounded-full h-4 mx-2">
+                    <div class="bg-emerald-500 h-4 rounded-full transition-all" style="width: {{ row.pct }}%"></div>
+                </div>
+                <span class="w-16 text-right text-sm text-gray-500">{{ row.probabilidad }}</span>
+            </div>
+            {% empty %}
+            <p class="text-gray-400 text-center py-4">
+                El modelo LSTM no está entrenado o no hay datos suficientes.<br>
+                <span class="text-xs text-gray-500">Ejecuta <code>python manage.py entrenar_modelos</code> en la terminal para entrenarlo.</span>
+            </p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow p-5">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">Cadenas de Markov</h2>
+        {% for tipo_markov, info in markov.items %}
+        <details class="mb-3" {% if forloop.first %}open{% endif %}>
+            <summary class="cursor-pointer font-medium text-sm text-primary-600 hover:text-primary-800">
+                {{ tipo_markov|capfirst }} — Estado actual: <span class="font-bold text-gray-800">{{ info.estado_actual }}</span>
+            </summary>
+            <div class="mt-2 overflow-x-auto">
+                <table class="w-full text-xs">
+                    {% for estado, prob in info.distribucion.items %}
+                    <tr class="border-b">
+                        <td class="p-1 font-medium text-gray-600">&rarr; {{ estado }}</td>
+                        <td class="p-1 text-right font-semibold text-gray-700">{{ prob|floatformat:3 }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </details>
+        {% empty %}
+        <p class="text-gray-400 text-center py-4">Sin datos de Markov</p>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

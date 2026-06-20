@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iniciar Sesión — Loterías</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 min-h-screen flex items-center justify-center p-4 relative overflow-hidden font-sans">
+    <!-- Fondo decorativo brillante -->
+    <div class="absolute w-96 h-96 -top-20 -left-20 bg-blue-500/10 rounded-full blur-3xl"></div>
+    <div class="absolute w-96 h-96 -bottom-20 -right-20 bg-emerald-500/10 rounded-full blur-3xl"></div>
+
+    <div class="w-full max-w-md bg-slate-900/50 backdrop-blur-xl border border-slate-800/80 p-8 rounded-2xl shadow-2xl relative z-10">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                Portal de Loterías
+            </h1>
+            <p class="text-sm text-slate-400 mt-2">Analítica y predicciones inteligentes</p>
+        </div>
+
+        {% if error %}
+        <div class="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg text-sm mb-6 text-center">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        <form method="post" class="space-y-6">
+            {% csrf_token %}
+            <div>
+                <label for="username" class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Usuario</label>
+                <input type="text" name="username" id="username" required autocomplete="username"
+                       class="w-full bg-slate-950/80 border border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-slate-100 rounded-lg px-4 py-3 text-sm transition outline-none"
+                       placeholder="Introduce tu usuario">
+            </div>
+
+            <div>
+                <label for="password" class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Contraseña</label>
+                <input type="password" name="password" id="password" required autocomplete="current-password"
+                       class="w-full bg-slate-950/80 border border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-slate-100 rounded-lg px-4 py-3 text-sm transition outline-none"
+                       placeholder="••••••••">
+            </div>
+
+            <button type="submit"
+                    class="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-medium py-3 rounded-lg transition shadow-lg shadow-blue-500/20 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                Iniciar Sesión
+            </button>
+        </form>
+
+        <div class="text-center mt-6 text-xs text-slate-500">
+            Usuario de desarrollo: <span class="text-slate-400 font-mono">admin</span> / <span class="text-slate-400 font-mono">admin1234</span>
+        </div>
+    </div>
+</body>
+</html>

@@ -14,14 +14,6 @@ Dependencias:
 
 from __future__ import annotations
 
-# --- Easter Egg Pythonico ---
-# antigravity es un guiño a la cultura Python (PEP 401 / xkcd.com/353).
-# En un REPL interactivo abrirá el cómic. Aquí honra el espíritu del lenguaje.
-try:
-    import antigravity  # type: ignore  # noqa: F401,W0611
-except ModuleNotFoundError:
-    pass  # Si no está instalado, el universo sigue girando igual
-
 import warnings
 from collections import Counter
 from datetime import date, timedelta
@@ -113,16 +105,27 @@ class SorteoSchema(BaseModel):
     @model_validator(mode="after")
     def validar_bolas(self) -> "SorteoSchema":
         """
-        Valida que las bolas sean positivas y no haya duplicados
-        dentro del mismo grupo (bolas principales o especiales).
+        Valida integridad de las bolas antes de persistir en DB.
+
+        Reglas:
+            - Bolas principales: deben ser >= 1 (nunca 0 ni negativos).
+            - Números especiales: deben ser >= 0. El 0 es un valor válido
+              en algunos sorteos (p.ej. el Reintegro de Primitiva va de 0 a 9).
+            - No se admiten duplicados dentro de las bolas principales.
         """
-        if any(b <= 0 for b in self.bolas):
-            raise ValueError("Todas las bolas deben ser números positivos.")
+        if any(b < 1 for b in self.bolas):
+            raise ValueError(
+                "Las bolas principales deben ser >= 1 "
+                f"(valores recibidos: {self.bolas})."
+            )
         if len(self.bolas) != len(set(self.bolas)):
             raise ValueError("Las bolas principales no pueden repetirse.")
-        if self.especiales:
-            if any(e <= 0 for e in self.especiales):
-                raise ValueError("Los números especiales deben ser positivos.")
+        if self.especiales is not None:
+            if any(e < 0 for e in self.especiales):
+                raise ValueError(
+                    "Los números especiales no pueden ser negativos "
+                    f"(valores recibidos: {self.especiales})."
+                )
         return self
 
 
@@ -273,6 +276,76 @@ def guardar_sorteos_en_db(
         f"{omitidos} omitidos (ya existían o inválidos)."
     )
     return insertados, omitidos
+
+def cargar_df_desde_db(
+    tipo_sorteo: str,
+    columnas_bolas: list[str],
+    columnas_especiales: list[str],
+    session: Session,
+) -> pd.DataFrame:
+    """
+    Carga el histórico completo de un sorteo desde PostgreSQL como DataFrame.
+
+    Reconstruye el mismo formato de columnas que produce cargar_y_limpiar_datos()
+    para que todas las funciones de análisis reciban el mismo tipo de datos
+    independientemente de si el origen es CSV o DB.
+
+    El array 'bolas' de la DB se desempaqueta en columnas separadas
+    (Bola1, Bola2, ...) usando los nombres definidos en columnas_bolas.
+    Lo mismo con los especiales.
+
+    Args:
+        tipo_sorteo: Nombre del sorteo ('primitiva', 'gordo', 'euromillones').
+        columnas_bolas: Nombres de columna para las bolas principales.
+        columnas_especiales: Nombres de columna para los números especiales.
+        session: Sesión SQLAlchemy activa.
+
+    Returns:
+        DataFrame ordenado por fecha con las mismas columnas que el CSV limpio,
+        o DataFrame vacío si no hay registros.
+    """
+    filas = session.execute(
+        text(
+            "SELECT fecha, bolas, especiales FROM sorteo "
+            "WHERE tipo_sorteo = :tipo "
+            "ORDER BY fecha ASC"
+        ),
+        {"tipo": tipo_sorteo},
+    ).fetchall()
+
+    if not filas:
+        return pd.DataFrame()
+
+    registros: list[dict] = []
+    for fila in filas:
+        registro: dict = {"Fecha": pd.to_datetime(fila[0])}
+
+        # Desempaquetar array de bolas en columnas individuales
+        bolas_db: list[int] = fila[1] or []
+        for i, col in enumerate(columnas_bolas):
+            registro[col] = bolas_db[i] if i < len(bolas_db) else None
+
+        # Desempaquetar especiales si existen
+        especiales_db: list[int] = fila[2] or []
+        for i, col in enumerate(columnas_especiales):
+            registro[col] = especiales_db[i] if i < len(especiales_db) else None
+
+        registros.append(registro)
+
+    df = pd.DataFrame(registros)
+
+    # Asegurar tipos Int64 (nullable) igual que cargar_y_limpiar_datos
+    for col in columnas_bolas + columnas_especiales:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    df.sort_values("Fecha", inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    print(
+        f"[DB] '{tipo_sorteo}': {len(df)} registros cargados desde PostgreSQL."
+    )
+    return df
 
 
 # ===========================================================================
@@ -734,7 +807,11 @@ def preparar_secuencias_lstm(
     for i in range(ventana, len(vectores)):
         x_list.append(np.stack(vectores[i - ventana: i]))
         y_list.append(vectores[i])
-
+    if not x_list:
+        return (
+            torch.empty(0, ventana, max_numero, dtype=torch.float32),
+            torch.empty(0, max_numero, dtype=torch.float32),
+        )
     x_arr = np.stack(x_list)   # (N, ventana, max_numero)
     y_arr = np.stack(y_list)   # (N, max_numero)
     return (
@@ -962,6 +1039,13 @@ def _ejecutar_analisis_sorteo(
         modelo = LSTMLoteria(input_size=max_num)
         entrenar_lstm(modelo, x_tensor, y_tensor)
 
+        # Guardar el modelo en la carpeta de modelos entrenados de la app Django
+        dir_modelos = Path("analytics/modelos_entrenados")
+        dir_modelos.mkdir(parents=True, exist_ok=True)
+        ruta_modelo = dir_modelos / f"lstm_{config['sorteo']}.pt"
+        torch.save(modelo.state_dict(), ruta_modelo)
+        print(f"[OK] Modelo LSTM guardado en: {ruta_modelo}")
+
         ultima_seq = x_tensor[-1].unsqueeze(0)
         tendencias = predecir_tendencias_lstm(modelo, ultima_seq, max_num)
         print("Top 15 números por tendencia estadística LSTM:")
@@ -981,49 +1065,65 @@ def main() -> None:
     """
     Pipeline principal: carga config, conecta a DB y ejecuta todos los análisis.
 
-    Flujo:
+    Flujo por sorteo:
         1. Leer ConfigDB desde .env (Pydantic Settings).
         2. Conectar a PostgreSQL y crear tablas si no existen (SQLAlchemy).
         3. Para cada sorteo en sorteos.json:
-           a. Cargar y limpiar CSV.
-           b. Guardar registros nuevos en DB (upsert con Pydantic validation).
-           c. Ejecutar análisis estadísticos completos.
-    """
-    # --- Configuración desde .env ---
-    cfg = ConfigDB()  # Pydantic lee DATABASE_URL del .env automáticamente
-    print(f"[CONFIG] Conectando a la base de datos...")
+           a. Cargar CSV y guardar en DB solo los registros nuevos.
+              En ejecuciones posteriores, si no hay registros nuevos en el CSV
+              respecto a la DB, no se inserta nada.
+           b. Cargar el histórico COMPLETO desde la DB (fuente de verdad).
+           c. Ejecutar todos los análisis estadísticos sobre los datos de DB.
 
-    # --- Conexión y creación de tablas ---
+    Separar "origen de datos para inserción" (CSV) de "origen de datos para
+    análisis" (DB) garantiza que los análisis siempre reflejan el estado
+    completo y persistido, no solo el contenido del CSV local.
+    """
+    cfg = ConfigDB()
+    print("[CONFIG] Conectando a la base de datos...")
+
     engine = crear_engine(cfg.database_url)
     inicializar_db(engine)
     SessionLocal = sessionmaker(bind=engine)
 
-    # --- Configuración de sorteos ---
     configs = cargar_config_sorteos()
 
-    # Fecha del próximo sorteo (próximo domingo)
     hoy = date.today()
     dias_hasta_domingo = (6 - hoy.weekday() + 7) % 7 or 7
     fecha_proximo_sorteo = hoy + timedelta(days=dias_hasta_domingo)
 
     for config in configs:
-        df = cargar_y_limpiar_datos(config)
+        tipo = config["sorteo"]
+        cols_bolas: list[str] = config["numeros"]
+        cols_especiales: list[str] = config["numeros_especiales"]
+
+        # --- PASO 1: Cargar CSV e insertar solo registros nuevos en DB ---
+        df_csv = cargar_y_limpiar_datos(config)
+
+        with SessionLocal() as session:
+            if not df_csv.empty:
+                print(f"\n[DB] Sincronizando '{tipo}' con PostgreSQL...")
+                insertados, omitidos = guardar_sorteos_en_db(
+                    df=df_csv,
+                    tipo_sorteo=tipo,
+                    columnas_bolas=cols_bolas,
+                    columnas_especiales=cols_especiales,
+                    session=session,
+                )
+                if insertados == 0:
+                    print(
+                        f"[DB] Sin registros nuevos en el CSV para '{tipo}'."
+                    )
+
+            # --- PASO 2: Cargar histórico completo desde DB ---
+            print(f"\n[DB] Cargando histórico de '{tipo}' desde PostgreSQL...")
+            df = cargar_df_desde_db(tipo, cols_bolas, cols_especiales, session)
+
         if df.empty:
-            print(f"[SKIP] Sorteo '{config['sorteo']}' sin datos válidos.\n")
+            print(f"[SKIP] Sin datos en DB para '{tipo}'. Ejecuta primero con CSV.\n")
             continue
 
-        # --- PERSISTENCIA EN POSTGRESQL ---
-        print(f"\n[DB] Guardando histórico de '{config['sorteo']}' en PostgreSQL...")
-        with SessionLocal() as session:
-            guardar_sorteos_en_db(
-                df=df,
-                tipo_sorteo=config["sorteo"],
-                columnas_bolas=config["numeros"],
-                columnas_especiales=config["numeros_especiales"],
-                session=session,
-            )
-
-        # --- ANÁLISIS ESTADÍSTICOS ---
+        # --- PASO 3: Análisis sobre datos de la DB ---
         _ejecutar_analisis_sorteo(df, config, fecha_proximo_sorteo)
         print(f"\n{'='*60}\n")
 

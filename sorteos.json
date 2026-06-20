@@ -7,7 +7,7 @@
         "numeros_especiales": ["Clave"]
     },
     {
-        "sorteo": "euromilones",
+        "sorteo": "euromillones",
         "fichero": "euromillones.csv",
         "columnas": ["Fecha", "Bola1", "Bola2", "Bola3", "Bola4", "Bola5", "Estrella1", "Estrella2"],
         "numeros": ["Bola1", "Bola2", "Bola3", "Bola4", "Bola5"],

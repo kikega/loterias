@@ -1,0 +1,130 @@
+{% extends "analytics/base.html" %}
+
+{% block title %}Insertar Sorteo{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto">
+    <h1 class="text-2xl font-bold text-gray-800 mb-2">Insertar Nuevo Sorteo</h1>
+    <p class="text-sm text-gray-500 mb-6">Introduce manualmente los resultados de un sorteo.</p>
+
+    <div class="flex flex-wrap gap-2 mb-6">
+        {% for t in tipos %}
+        <a href="?tipo={{ t }}"
+           class="px-4 py-2 rounded text-sm font-medium transition
+                  {% if t == tipo_activo %}
+                      bg-primary-600 text-white shadow
+                  {% else %}
+                      bg-white text-gray-600 border hover:bg-primary-50
+                  {% endif %}">
+            {{ t|capfirst }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Columna del Formulario (izquierda) -->
+        <div class="lg:col-span-2">
+            <form method="post" class="bg-white rounded-xl shadow p-6 space-y-5">
+                {% csrf_token %}
+
+                {% if form.non_field_errors %}
+                <div class="bg-red-50 border-l-4 border-red-400 p-3 text-sm text-red-700 rounded">
+                    {{ form.non_field_errors }}
+                </div>
+                {% endif %}
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Tipo de sorteo</label>
+                        {{ form.tipo_sorteo }}
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Fecha</label>
+                        {{ form.fecha }}
+                    </div>
+                </div>
+
+                <fieldset>
+                    <legend class="text-sm font-semibold text-gray-700 mb-2">Bolas principales</legend>
+                    <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                        {% for field in form %}
+                            {% if field.name|slice:":4" == "bola" %}
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">{{ field.label }}</label>
+                                {{ field }}
+                                {% for error in field.errors %}
+                                <p class="text-red-500 text-xs mt-1">{{ error }}</p>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </fieldset>
+
+                {% if tiene_especiales %}
+                <fieldset>
+                    <legend class="text-sm font-semibold text-gray-700 mb-2">Números especiales</legend>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {% for field in form %}
+                            {% if field.name|slice:":8" == "especial" %}
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">{{ field.label }}</label>
+                                {{ field }}
+                                {% for error in field.errors %}
+                                <p class="text-red-500 text-xs mt-1">{{ error }}</p>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </fieldset>
+                {% endif %}
+
+                <button type="submit"
+                        class="w-full bg-primary-600 hover:bg-primary-700 text-white font-medium py-3 px-4 rounded transition shadow">
+                    Guardar Sorteo
+                </button>
+            </form>
+        </div>
+
+        <!-- Columna de Historial (derecha) -->
+        <div class="lg:col-span-1">
+            <div class="bg-white rounded-xl shadow p-5 border border-gray-100">
+                <h2 class="text-md font-semibold text-gray-700 mb-4 pb-2 border-b">Últimos 10 Sorteos</h2>
+                <div class="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+                    {% for sorteo in ultimos_sorteos %}
+                    <div class="p-3 bg-gray-50/50 hover:bg-gray-50 rounded-lg border border-gray-100 transition">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-bold text-gray-500">{{ sorteo.fecha|date:"d/m/Y" }}</span>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded bg-primary-50 text-primary-700 capitalize">{{ sorteo.tipo_sorteo }}</span>
+                        </div>
+                        
+                        <div class="flex flex-wrap items-center gap-1.5 mb-1.5">
+                            <span class="text-[10px] uppercase font-bold text-gray-400 mr-1">Bolas:</span>
+                            {% for bola in sorteo.bolas %}
+                            <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 text-primary-800 font-bold text-[10px] shadow-sm">
+                                {{ bola }}
+                            </span>
+                            {% endfor %}
+                        </div>
+
+                        {% if sorteo.especiales %}
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="text-[10px] uppercase font-bold text-gray-400 mr-1">Esp:</span>
+                            {% for esp in sorteo.especiales %}
+                            <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] shadow-sm border border-amber-200">
+                                {{ esp }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% empty %}
+                    <p class="text-sm text-gray-400 text-center py-4">Sin sorteos registrados</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
