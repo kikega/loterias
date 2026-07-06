@@ -1,4 +1,5 @@
 import json
+import datetime
 from typing import Any
 
 import pandas as pd
@@ -13,8 +14,11 @@ from .ml_services import (
     df_desde_orm,
     ejecutar_analisis,
     tipos_disponibles,
+    obtener_anio_semana_iso,
+    obtener_pesos_adaptativos,
+    generar_predicciones_semanales,
 )
-from .models import Sorteo
+from .models import Sorteo, PrediccionSemanal, CombinacionPredicha
 
 
 def _limpiar_nombre_col(name: str) -> str:
@@ -265,3 +269,193 @@ def logout_view(request: HttpRequest) -> HttpResponse:
     """
     logout(request)
     return redirect("login")
+
+
+@login_required
+def panel_predicciones(request: HttpRequest) -> HttpResponse:
+    """
+    Vista que sirve la página base del panel de predicciones semanales.
+    Calcula las fechas y semanas de navegación.
+
+    Args:
+        request (HttpRequest): Solicitud HTTP.
+
+    Returns:
+        HttpResponse: Renderizado de la plantilla de predicciones.
+    """
+    tipo = request.GET.get("tipo", "primitiva")
+    if tipo not in tipos_disponibles():
+        tipo = "primitiva"
+
+    hoy = datetime.date.today()
+    anio_str = request.GET.get("anio")
+    semana_str = request.GET.get("semana")
+
+    try:
+        anio = int(anio_str) if anio_str else hoy.isocalendar()[0]
+        semana = int(semana_str) if semana_str else hoy.isocalendar()[1]
+        # Validar limites de la semana/año recreando la fecha
+        d_ref = datetime.date.fromisocalendar(anio, semana, 1)
+    except Exception:
+        anio, semana = hoy.isocalendar()[0], hoy.isocalendar()[1]
+        d_ref = datetime.date.fromisocalendar(anio, semana, 1)
+
+    # Calcular semanas anterior y posterior
+    prev_d = d_ref - datetime.timedelta(weeks=1)
+    next_d = d_ref + datetime.timedelta(weeks=1)
+    prev_anio, prev_semana, _ = prev_d.isocalendar()
+    next_anio, next_semana, _ = next_d.isocalendar()
+
+    ctx = {
+        "tipos": tipos_disponibles(),
+        "tipo_activo": tipo,
+        "anio": anio,
+        "semana": semana,
+        "prev_anio": prev_anio,
+        "prev_semana": prev_semana,
+        "next_anio": next_anio,
+        "next_semana": next_semana,
+    }
+    return render(request, "analytics/predicciones.html", ctx)
+
+
+@login_required
+def predicciones_content(request: HttpRequest) -> HttpResponse:
+    """
+    Vista invocada por HTMX que renderiza el panel de predicciones detallado.
+    Calcula los aciertos de la semana, las estadísticas de aprendizaje y los pesos adaptativos.
+
+    Args:
+        request (HttpRequest): Solicitud HTTP.
+
+    Returns:
+        HttpResponse: Parcial HTML con las combinaciones y el aprendizaje.
+    """
+    tipo = request.GET.get("tipo", "primitiva")
+    if tipo not in tipos_disponibles():
+        tipo = "primitiva"
+
+    hoy = datetime.date.today()
+    try:
+        anio = int(request.GET.get("anio", hoy.isocalendar()[0]))
+        semana = int(request.GET.get("semana", hoy.isocalendar()[1]))
+        lunes_semana = datetime.date.fromisocalendar(anio, semana, 1)
+        domingo_semana = datetime.date.fromisocalendar(anio, semana, 7)
+    except Exception:
+        anio = hoy.isocalendar()[0]
+        semana = hoy.isocalendar()[1]
+        lunes_semana = datetime.date.fromisocalendar(anio, semana, 1)
+        domingo_semana = datetime.date.fromisocalendar(anio, semana, 7)
+
+    # Buscar la predicción semanal
+    try:
+        prediccion = PrediccionSemanal.objects.get(
+            tipo_sorteo=tipo, anio=anio, semana=semana
+        )
+        combinaciones = prediccion.combinaciones.all().order_by("orden")
+    except PrediccionSemanal.DoesNotExist:
+        prediccion = None
+        combinaciones = []
+
+    # Recuperar sorteos reales de esa semana
+    sorteos_semana = Sorteo.objects.filter(
+        tipo_sorteo=tipo, fecha__range=(lunes_semana, domingo_semana)
+    ).order_by("fecha")
+
+    # Extraer aciertos totales de la semana
+    bolas_acertadas_totales = set()
+    especiales_acertados_totales = set()
+    for c in combinaciones:
+        for fecha_sorteo, aciertos_info in c.aciertos_por_sorteo.items():
+            bolas_acertadas_totales.update(aciertos_info.get("bolas_acertadas", []))
+            especiales_acertados_totales.update(aciertos_info.get("especiales_acertados", []))
+
+    # Obtener rendimiento y pesos adaptativos históricos
+    w_lstm, w_tendencia = obtener_pesos_adaptativos(tipo)
+
+    # Contar aciertos históricos totales
+    combs_historicas = CombinacionPredicha.objects.filter(
+        prediccion_semanal__tipo_sorteo=tipo, procesado=True
+    )
+    total_aciertos_lstm = 0
+    total_aciertos_tendencia = 0
+    for c in combs_historicas:
+        total_c = sum(ac.get("total_bolas", 0) for ac in c.aciertos_por_sorteo.values())
+        if c.estrategia == "lstm_pura":
+            total_aciertos_lstm += total_c
+        elif c.estrategia == "tendencia_pura":
+            total_aciertos_tendencia += total_c
+
+    ctx = {
+        "prediccion": prediccion,
+        "combinaciones": combinaciones,
+        "sorteos_semana": sorteos_semana,
+        "bolas_acertadas_totales": bolas_acertadas_totales,
+        "especiales_acertados_totales": especiales_acertados_totales,
+        "peso_lstm_pct": round(w_lstm * 100),
+        "peso_tendencia_pct": round(w_tendencia * 100),
+        "total_aciertos_lstm": total_aciertos_lstm,
+        "total_aciertos_tendencia": total_aciertos_tendencia,
+        "tipo_activo": tipo,
+        "anio": anio,
+        "semana": semana,
+    }
+    return render(request, "analytics/predicciones_content.html", ctx)
+
+
+@login_required
+def generar_predicciones_view(request: HttpRequest) -> HttpResponse:
+    """
+    Vista POST que genera las predicciones para una semana dada
+    y devuelve el contenido actualizado.
+
+    Args:
+        request (HttpRequest): Solicitud HTTP con el método POST.
+
+    Returns:
+        HttpResponse: Contenido HTML parcial del panel.
+    """
+    if request.method == "POST":
+        tipo = request.POST.get("tipo", "primitiva")
+        try:
+            anio = int(request.POST.get("anio"))
+            semana = int(request.POST.get("semana"))
+            generar_predicciones_semanales(tipo, anio, semana)
+        except Exception:
+            pass
+
+    # Reutilizar la vista content para renderizar el panel actualizado
+    request.GET = request.POST.copy()
+    return predicciones_content(request)
+
+
+@login_required
+def reentrenar_modelo_view(request: HttpRequest) -> HttpResponse:
+    """
+    Vista POST que ejecuta el entrenamiento completo de la LSTM del sorteo
+    seleccionado de forma síncrona en CPU (rápido en sets pequeños) y devuelve
+    un mensaje de éxito o error con un estilo cuidado.
+
+    Args:
+        request (HttpRequest): Solicitud HTTP.
+
+    Returns:
+        HttpResponse: Fragmento HTML de estado del entrenamiento.
+    """
+    if request.method == "POST":
+        tipo = request.POST.get("tipo", "primitiva")
+        try:
+            ejecutar_analisis(tipo, entrenar=True)
+            return HttpResponse(
+                '<div class="bg-emerald-50 text-emerald-800 text-xs font-semibold rounded-xl p-3.5 border border-emerald-200 transition shadow-sm">'
+                '✓ Modelo neuronal entrenado y guardado correctamente.'
+                '</div>'
+            )
+        except Exception as e:
+            return HttpResponse(
+                f'<div class="bg-red-50 text-red-800 text-xs font-semibold rounded-xl p-3.5 border border-red-200 transition shadow-sm">'
+                f'✗ Error al entrenar el modelo: {str(e)}'
+                f'</div>'
+            )
+    return HttpResponse(status=405)
+

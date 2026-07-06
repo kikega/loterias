@@ -1,0 +1,223 @@
+{% if not prediccion %}
+<div class="bg-white border border-dashed border-gray-300 rounded-2xl p-12 text-center shadow-sm">
+    <div class="mx-auto w-16 h-16 bg-primary-50 rounded-2xl flex items-center justify-center text-primary-600 mb-4">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+        </svg>
+    </div>
+    <h3 class="text-lg font-bold text-gray-900 mb-2">No hay predicciones generadas</h3>
+    <p class="text-gray-500 max-w-md mx-auto mb-6 text-sm">
+        Aún no has estimado las combinaciones para la semana {{ semana }} del año {{ anio }} en el sorteo {{ tipo_activo|capfirst }}.
+    </p>
+    
+    <form hx-post="{% url 'generar_predicciones' %}" 
+          hx-target="#predicciones-container" 
+          hx-swap="innerHTML" 
+          class="inline-block">
+        {% csrf_token %}
+        <input type="hidden" name="tipo" value="{{ tipo_activo }}">
+        <input type="hidden" name="anio" value="{{ anio }}">
+        <input type="hidden" name="semana" value="{{ semana }}">
+        <button type="submit" 
+                class="bg-primary-600 hover:bg-primary-700 text-white font-semibold px-6 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            Generar Predicciones Semanales
+        </button>
+    </form>
+</div>
+{% else %}
+
+<!-- Panel de combinaciones propuestas -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+    {% for comb in combinaciones %}
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col justify-between hover:shadow-md transition">
+        <div>
+            <div class="flex items-center justify-between mb-4">
+                <span class="text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full 
+                    {% if comb.estrategia == 'lstm_pura' %}bg-emerald-50 text-emerald-700 border border-emerald-100
+                    {% elif comb.estrategia == 'tendencia_pura' %}bg-blue-50 text-blue-700 border border-blue-100
+                    {% else %}bg-purple-50 text-purple-700 border border-purple-100{% endif %}">
+                    {% if comb.estrategia == 'lstm_pura' %}Red Neuronal LSTM
+                    {% elif comb.estrategia == 'tendencia_pura' %}Índice de Tendencia
+                    {% else %}Híbrido Adaptativo{% endif %}
+                </span>
+                <span class="text-sm font-semibold text-gray-400">Comb #{{ comb.orden }}</span>
+            </div>
+            
+            <!-- Números de bolas principales -->
+            <div class="flex flex-wrap gap-2.5 mb-6">
+                {% for bola in comb.bolas %}
+                <span class="inline-flex items-center justify-center w-11 h-11 rounded-full font-bold text-sm shadow-sm transition-all border
+                    {% if bola in bolas_acertadas_totales %}
+                        bg-emerald-500 text-white border-emerald-600 scale-105 ring-4 ring-emerald-100
+                    {% else %}
+                        bg-gray-50 text-gray-800 border-gray-200 hover:border-gray-300
+                    {% endif %}"
+                    title="{% if bola in bolas_acertadas_totales %}¡Número Acertado!{% else %}Bola {{ bola }}{% endif %}">
+                    {{ bola }}
+                </span>
+                {% endfor %}
+            </div>
+
+            <!-- Especiales (si existen) -->
+            {% if comb.especiales %}
+            <div class="border-t border-gray-100 pt-4 mb-4">
+                <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Números Especiales</p>
+                <div class="flex flex-wrap gap-2.5">
+                    {% for esp in comb.especiales %}
+                    <span class="inline-flex items-center justify-center w-10 h-10 rounded-full font-bold text-sm shadow-sm transition-all border
+                        {% if esp in especiales_acertados_totales %}
+                            bg-amber-500 text-white border-amber-600 scale-105 ring-4 ring-amber-100
+                        {% else %}
+                            bg-amber-50 text-amber-800 border-amber-200 hover:border-amber-300
+                        {% endif %}"
+                        title="{% if esp in especiales_acertados_totales %}¡Especial Acertado!{% else %}Especial{{ esp }}{% endif %}">
+                        {{ esp }}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Aciertos detallados por sorteo -->
+        <div class="bg-gray-50 rounded-xl p-3 text-xs mt-4">
+            <p class="font-bold text-gray-500 uppercase tracking-wider mb-2">Aciertos de la Semana</p>
+            {% if comb.aciertos_por_sorteo %}
+                <div class="space-y-1.5">
+                    {% for fecha, acierto in comb.aciertos_por_sorteo.items %}
+                    <div class="flex items-center justify-between border-b border-gray-200 pb-1 last:border-0 last:pb-0">
+                        <span class="font-medium text-gray-600">{{ fecha }}</span>
+                        <span class="font-bold text-gray-800">
+                            {{ acierto.total_bolas }} bolas
+                            {% if acierto.total_especiales > 0 %}
+                                + {{ acierto.total_especiales }} esp
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <span class="text-gray-400 italic">Esperando a que se celebren sorteos...</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Sorteos de la semana e Historial / Aprendizaje -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Sorteos reales celebrados en la semana -->
+    <div class="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm">
+        <h3 class="text-lg font-bold text-gray-900 mb-4">Sorteos de esta Semana</h3>
+        {% if sorteos_semana %}
+            <div class="divide-y divide-gray-100">
+                {% for sorteo in sorteos_semana %}
+                <div class="py-4 first:pt-0 last:pb-0 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div>
+                        <p class="font-semibold text-gray-800">{{ sorteo.fecha|date:"l, d F Y" }}</p>
+                        <p class="text-xs text-gray-400 capitalize">Sorteo de {{ sorteo.tipo_sorteo }}</p>
+                    </div>
+                    
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        {% for b in sorteo.bolas %}
+                        <span class="w-8 h-8 rounded-full bg-primary-50 border border-primary-200 text-primary-800 font-bold text-xs flex items-center justify-center">
+                            {{ b }}
+                        </span>
+                        {% endfor %}
+                        {% if sorteo.especiales %}
+                            <span class="text-gray-300 mx-1">|</span>
+                            {% for esp in sorteo.especiales %}
+                            <span class="w-8 h-8 rounded-full bg-amber-50 border border-amber-200 text-amber-800 font-bold text-xs flex items-center justify-center">
+                                {{ esp }}
+                            </span>
+                            {% endfor %}
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="py-8 text-center text-gray-400">
+                <svg class="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+                <p class="text-sm font-medium">No se han registrado sorteos reales para esta semana.</p>
+                <p class="text-xs mt-1">Inserta un nuevo sorteo para analizar los aciertos.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Panel de aprendizaje adaptativo de la IA -->
+    <div class="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm flex flex-col justify-between">
+        <div>
+            <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                </svg>
+                Aprendizaje del Algoritmo
+            </h3>
+            
+            <p class="text-xs text-gray-500 mb-6 leading-relaxed">
+                El sistema calibra la estrategia <strong>Híbrida Adaptativa</strong> según los aciertos reales acumulados en semanas anteriores. Las estrategias que más aciertan ganan mayor ponderación en la generación de números.
+            </p>
+            
+            <!-- Barra de pesos actuales -->
+            <div class="space-y-4 mb-6">
+                <div>
+                    <div class="flex justify-between text-xs font-semibold mb-1 text-gray-600">
+                        <span>Peso Red Neuronal LSTM</span>
+                        <span class="text-purple-600 font-bold">{{ peso_lstm_pct }}%</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-3">
+                        <div class="bg-purple-600 h-3 rounded-full transition-all duration-500" style="width: {{ peso_lstm_pct }}%"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs font-semibold mb-1 text-gray-600">
+                        <span>Peso Análisis de Tendencias</span>
+                        <span class="text-blue-600 font-bold">{{ peso_tendencia_pct }}%</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-3">
+                        <div class="bg-blue-600 h-3 rounded-full transition-all duration-500" style="width: {{ peso_tendencia_pct }}%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Resumen de experiencia acumulada -->
+            <div class="grid grid-cols-2 gap-4 border-t border-gray-100 pt-4 mb-4">
+                <div class="bg-purple-50 rounded-xl p-3 border border-purple-100">
+                    <p class="text-[10px] uppercase font-bold text-purple-700">Aciertos LSTM</p>
+                    <p class="text-2xl font-black text-purple-900 mt-1">{{ total_aciertos_lstm }}</p>
+                    <p class="text-[10px] text-purple-500 mt-0.5">bolas totales</p>
+                </div>
+                <div class="bg-blue-50 rounded-xl p-3 border border-blue-100">
+                    <p class="text-[10px] uppercase font-bold text-blue-700">Aciertos Tendencias</p>
+                    <p class="text-2xl font-black text-blue-900 mt-1">{{ total_aciertos_tendencia }}</p>
+                    <p class="text-[10px] text-blue-500 mt-0.5">bolas totales</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Botón de entrenamiento de la LSTM manual con spinner HTMX -->
+        <div class="pt-4 border-t border-gray-100">
+            <div id="reentrenar-seccion">
+                <button hx-post="{% url 'reentrenar_modelo' %}"
+                        hx-vals='{"tipo": "{{ tipo_activo }}"}'
+                        hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+                        hx-target="#reentrenar-seccion"
+                        hx-swap="outerHTML"
+                        class="w-full bg-gray-900 hover:bg-black text-white font-semibold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition disabled:opacity-75"
+                        onclick="this.disabled=true; this.innerHTML='<svg class=\'animate-spin h-4 w-4 text-white\' xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\'><circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle><path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z\'></path></svg> Entrenando Red Neuronal...';">
+                    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.228 5.6M7 9h4V5"/>
+                    </svg>
+                    Reentrenar Red LSTM ({{ tipo_activo|capfirst }})
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}

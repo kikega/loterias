@@ -766,3 +766,312 @@ def _proxima_fecha(tipo_sorteo: str) -> date:
     hoy = date.today()
     dias_hasta_domingo = (6 - hoy.weekday() + 7) % 7 or 7
     return hoy + timedelta(days=dias_hasta_domingo)
+
+
+# ---------------------------------------------------------------------------
+# LÓGICA DE PREDICCIONES SEMANALES Y APRENDIZAJE ADAPTATIVO
+# ---------------------------------------------------------------------------
+
+LIMITES_SORTEO = {
+    "primitiva": {
+        "min_num": 1,
+        "max_num": 49,
+        "cant_bolas": 6,
+        "especiales": [
+            {"nombre": "Complementario", "min": 1, "max": 49},
+            {"nombre": "Reintegro", "min": 0, "max": 9}
+        ]
+    },
+    "euromillones": {
+        "min_num": 1,
+        "max_num": 50,
+        "cant_bolas": 5,
+        "especiales": [
+            {"nombre": "Estrella1", "min": 1, "max": 12},
+            {"nombre": "Estrella2", "min": 1, "max": 12}
+        ]
+    },
+    "gordo": {
+        "min_num": 1,
+        "max_num": 54,
+        "cant_bolas": 5,
+        "especiales": [
+            {"nombre": "Clave", "min": 0, "max": 9}
+        ]
+    }
+}
+
+
+def obtener_anio_semana_iso(fecha: date) -> tuple[int, int]:
+    """
+    Obtiene el año y el número de semana según el estándar ISO 8601.
+
+    Args:
+        fecha (date): Fecha de referencia.
+
+    Returns:
+        tuple[int, int]: Año y número de semana ISO.
+    """
+    iso_calendar = fecha.isocalendar()
+    return iso_calendar[0], iso_calendar[1]
+
+
+def obtener_pesos_adaptativos(tipo_sorteo: str) -> tuple[float, float]:
+    """
+    Analiza el rendimiento histórico de aciertos de las estrategias
+    para calibrar los pesos de la predicción híbrida (aprendizaje adaptativo).
+
+    Args:
+        tipo_sorteo (str): Tipo de sorteo.
+
+    Returns:
+        tuple[float, float]: Pesos (W_lstm, W_tendencia) auto-ajustados.
+    """
+    from .models import CombinacionPredicha
+
+    combs_historicas = CombinacionPredicha.objects.filter(
+        prediccion_semanal__tipo_sorteo=tipo_sorteo,
+        procesado=True
+    )
+
+    aciertos_lstm = 0
+    aciertos_tendencia = 0
+
+    for c in combs_historicas:
+        total_aciertos_comb = 0
+        for fecha_sorteo, aciertos_info in c.aciertos_por_sorteo.items():
+            total_aciertos_comb += aciertos_info.get("total_bolas", 0)
+
+        if c.estrategia == "lstm_pura":
+            aciertos_lstm += total_aciertos_comb
+        elif c.estrategia == "tendencia_pura":
+            aciertos_tendencia += total_aciertos_comb
+
+    # Suavizado de Laplace para evitar división por cero o pesos sesgados inicialmente
+    denominador = aciertos_lstm + aciertos_tendencia + 2.0
+    w_lstm = (aciertos_lstm + 1.0) / denominador
+    w_tendencia = 1.0 - w_lstm
+
+    return w_lstm, w_tendencia
+
+
+def generar_predicciones_semanales(
+    tipo_sorteo: str, anio: int, semana: int
+) -> PrediccionSemanal:
+    """
+    Genera y guarda 3 combinaciones estimadas utilizando las 3 estrategias:
+    LSTM Pura, Tendencia Pura e Híbrida Adaptativa (con pesos auto-ajustados).
+
+    Args:
+        tipo_sorteo (str): Tipo del sorteo.
+        anio (int): Año ISO.
+        semana (int): Semana ISO.
+
+    Returns:
+        PrediccionSemanal: Objeto de predicción generado e insertado.
+    """
+    from .models import PrediccionSemanal, CombinacionPredicha
+
+    # Verificar si ya existe
+    pred, creada = PrediccionSemanal.objects.get_or_create(
+        tipo_sorteo=tipo_sorteo, anio=anio, semana=semana
+    )
+    if not creada and pred.combinaciones.exists():
+        return pred
+
+    # Eliminar posibles combinaciones vacías e inicializar de nuevo
+    pred.combinaciones.all().delete()
+
+    # Ejecutar análisis actual
+    resultado = ejecutar_analisis(tipo_sorteo, entrenar=False)
+    limites = LIMITES_SORTEO[tipo_sorteo]
+    cant_bolas = limites["cant_bolas"]
+
+    # 1. Obtener puntuación de LSTM
+    lstm_probs = {n: p for n, p in resultado.lstm_top} if resultado.lstm_top else {}
+    
+    # 2. Obtener puntuación de Tendencia
+    tendencia_scores = {}
+    if not resultado.indice_tendencia.empty:
+        for _, row in resultado.indice_tendencia.iterrows():
+            tendencia_scores[int(row["Numero"])] = float(row["Indice"])
+
+    # Normalizar puntuaciones para la estrategia híbrida
+    # LSTM: la probabilidad ya está en rango [0, 1]
+    # Tendencia: normalizar en rango [0, 1]
+    max_t = max(tendencia_scores.values()) if tendencia_scores else 1.0
+    min_t = min(tendencia_scores.values()) if tendencia_scores else 0.0
+    rango_t = (max_t - min_t) if max_t != min_t else 1.0
+
+    tendencia_norm = {
+        num: (val - min_t) / rango_t for num, val in tendencia_scores.items()
+    }
+
+    # Obtener pesos adaptativos
+    w_lstm, w_tendencia = obtener_pesos_adaptativos(tipo_sorteo)
+
+    # 3. Generar combinaciones para cada estrategia
+    todas_bolas_rango = list(range(limites["min_num"], limites["max_num"] + 1))
+
+    # A. Estrategia LSTM Pura
+    candidatos_lstm = sorted(
+        todas_bolas_rango,
+        key=lambda n: lstm_probs.get(n, 0.0),
+        reverse=True
+    )
+    bolas_lstm = sorted(candidatos_lstm[:cant_bolas])
+
+    # B. Estrategia Tendencia Pura
+    candidatos_tendencia = sorted(
+        todas_bolas_rango,
+        key=lambda n: tendencia_scores.get(n, 0.0),
+        reverse=True
+    )
+    bolas_tendencia = sorted(candidatos_tendencia[:cant_bolas])
+
+    # C. Estrategia Híbrida Adaptativa
+    def score_hibrido(n: int) -> float:
+        p_lstm = lstm_probs.get(n, 0.0)
+        p_tend = tendencia_norm.get(n, 0.5)
+        return w_lstm * p_lstm + w_tend_p if (w_tend_p := w_tendencia * p_tend) else w_lstm * p_lstm
+
+    candidatos_hibridos = sorted(
+        todas_bolas_rango,
+        key=score_hibrido,
+        reverse=True
+    )
+    bolas_hibridas = sorted(candidatos_hibridos[:cant_bolas])
+
+    # 4. Generar números especiales basados en frecuencias de aparición
+    # Para cada número especial, tomamos los más frecuentes en el histórico
+    especiales_sugeridos: list[list[int]] = [[], [], []]
+    
+    cfg = config_por_tipo(tipo_sorteo)
+    cols_esp = cfg["numeros_especiales"]
+
+    if cols_esp and not resultado.frecuencias_especiales.empty:
+        # Obtenemos los especiales más frecuentes según su conteo
+        freq_esp = resultado.frecuencias_especiales
+        esp_mas_comunes = []
+        for _, row in freq_esp.iterrows():
+            esp_mas_comunes.append((int(row["Numero"]), int(row["Frecuencia"])))
+        esp_mas_comunes.sort(key=lambda x: x[1], reverse=True)
+        
+        # Para Euromillones requerimos 2 estrellas por combinación. Para Gordo 1 clave.
+        cant_esp = len(cols_esp)
+        
+        # Proponemos variaciones de especiales para las 3 combinaciones
+        # Si no hay suficientes, repetimos los más frecuentes
+        for i in range(3):
+            # Tomamos un segmento de los más comunes y lo barajamos o desplazamos para no repetir exactamente lo mismo
+            seleccion = [item[0] for item in esp_mas_comunes[i * cant_esp : (i + 1) * cant_esp]]
+            if len(seleccion) < cant_esp:
+                # Fallback al inicio
+                seleccion = [item[0] for item in esp_mas_comunes[:cant_esp]]
+            especiales_sugeridos[i] = sorted(seleccion)
+    elif cols_esp:
+        # Fallback si no hay frecuencias especiales
+        cant_esp = len(cols_esp)
+        for i in range(3):
+            especiales_sugeridos[i] = list(range(1, cant_esp + 1))
+
+    # Guardar las combinaciones
+    CombinacionPredicha.objects.create(
+        prediccion_semanal=pred,
+        orden=1,
+        estrategia="lstm_pura",
+        bolas=bolas_lstm,
+        especiales=especiales_sugeridos[0] if cols_esp else None
+    )
+
+    CombinacionPredicha.objects.create(
+        prediccion_semanal=pred,
+        orden=2,
+        estrategia="tendencia_pura",
+        bolas=bolas_tendencia,
+        especiales=especiales_sugeridos[1] if cols_esp else None
+    )
+
+    CombinacionPredicha.objects.create(
+        prediccion_semanal=pred,
+        orden=3,
+        estrategia="hibrida_adaptativa",
+        bolas=bolas_hibridas,
+        especiales=especiales_sugeridos[2] if cols_esp else None
+    )
+
+    return pred
+
+
+def evaluar_predicciones_semana(sorteo: Sorteo) -> None:
+    """
+    Compara las combinaciones estimadas de la semana del sorteo real
+    e inserta los aciertos calculados (aprendizaje).
+
+    Args:
+        sorteo (Sorteo): Sorteo real recién ingresado.
+    """
+    from .models import PrediccionSemanal
+
+    # Obtener año y semana ISO
+    anio, semana = obtener_anio_semana_iso(sorteo.fecha)
+
+    try:
+        prediccion = PrediccionSemanal.objects.get(
+            tipo_sorteo=sorteo.tipo_sorteo,
+            anio=anio,
+            semana=semana
+        )
+    except PrediccionSemanal.DoesNotExist:
+        # No se generaron predicciones previas para esta semana
+        return
+
+    bolas_reales = set(sorteo.bolas_list())
+    especiales_reales = set(sorteo.especiales_list())
+
+    for comb in prediccion.combinaciones.all():
+        bolas_predichas = set(comb.bolas)
+        especiales_predichas = set(comb.especiales or [])
+
+        if sorteo.tipo_sorteo == "primitiva":
+            # Para Primitiva, solo comparar las 6 bolas principales por petición
+            bolas_acertadas = bolas_predichas.intersection(bolas_reales)
+            especiales_acertadas = set()
+        else:
+            bolas_acertadas = bolas_predichas.intersection(bolas_reales)
+            especiales_acertadas = especiales_predichas.intersection(especiales_reales)
+
+        # Guardar en el diccionario de aciertos bajo la fecha del sorteo
+        comb.aciertos_por_sorteo[str(sorteo.fecha)] = {
+            "bolas_acertadas": list(bolas_acertadas),
+            "especiales_acertados": list(especiales_acertadas),
+            "total_bolas": len(bolas_acertadas),
+            "total_especiales": len(especiales_acertadas)
+        }
+        comb.procesado = True
+        comb.save()
+
+
+def entrenar_modelo_asincrono(tipo_sorteo: str) -> None:
+    """
+    Inicia un hilo en segundo plano para reentrenar el modelo LSTM
+    del tipo de sorteo seleccionado sin bloquear el hilo principal.
+
+    Args:
+        tipo_sorteo (str): Tipo del sorteo a reentrenar.
+    """
+    import threading
+
+    def _tarea_entrenamiento():
+        try:
+            # Reentrenamos el modelo con 15 épocas para que sea rápido pero aprenda el nuevo dato
+            # Podemos forzar el entrenamiento completo
+            ejecutar_analisis(tipo_sorteo, entrenar=True)
+        except Exception:
+            # Silenciar errores del hilo en producción/desarrollo silencioso
+            pass
+
+    t = threading.Thread(target=_tarea_entrenamiento)
+    t.daemon = True
+    t.start()
+
