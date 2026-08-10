@@ -129,7 +129,30 @@ def dashboard_content(request: HttpRequest) -> HttpResponse:
         for n, p in resultado.lstm_top
     ]
 
-    ultimos_sorteos = Sorteo.objects.filter(tipo_sorteo=tipo).order_by("-fecha")[:10]
+    ultimos_sorteos = list(
+        Sorteo.objects.filter(tipo_sorteo=tipo).order_by("-fecha")[:10]
+    )
+    ultimos_sorteos.sort(key=lambda x: x.fecha, reverse=True)
+
+    # Calcular el máximo de aciertos de la predicción semanal para cada sorteo
+    semanas = {(s.fecha.isocalendar()[0], s.fecha.isocalendar()[1]) for s in ultimos_sorteos}
+    predicciones_semanas = PrediccionSemanal.objects.filter(
+        tipo_sorteo=tipo,
+        anio__in=[a for a, _ in semanas],
+        semana__in=[sem for _, sem in semanas],
+    ).prefetch_related("combinaciones")
+    combinaciones_por_semana = {
+        (p.anio, p.semana): list(p.combinaciones.all()) for p in predicciones_semanas
+    }
+    for s in ultimos_sorteos:
+        semana_clave = (s.fecha.isocalendar()[0], s.fecha.isocalendar()[1])
+        max_aciertos = None
+        for comb in combinaciones_por_semana.get(semana_clave, []):
+            info = comb.aciertos_por_sorteo.get(str(s.fecha))
+            if info:
+                total = info.get("total_bolas", 0) + info.get("total_especiales", 0)
+                max_aciertos = total if max_aciertos is None else max(max_aciertos, total)
+        s.max_aciertos = max_aciertos
 
     ctx = {
         "tipo_activo": tipo,
@@ -144,7 +167,7 @@ def dashboard_content(request: HttpRequest) -> HttpResponse:
         "frecuencias_especiales": _serializar_df(
             getattr(resultado, "frecuencias_especiales", pd.DataFrame())
         ),
-        "ultimos_sorteos": sorted(list(ultimos_sorteos), key=lambda x: x.fecha, reverse=True),
+        "ultimos_sorteos": ultimos_sorteos,
     }
     return render(request, "analytics/dashboard_content.html", ctx)
 

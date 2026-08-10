@@ -913,22 +913,6 @@ def generar_predicciones_semanales(
     # 3. Generar combinaciones para cada estrategia
     todas_bolas_rango = list(range(limites["min_num"], limites["max_num"] + 1))
 
-    # A. Estrategia LSTM Pura
-    candidatos_lstm = sorted(
-        todas_bolas_rango,
-        key=lambda n: lstm_probs.get(n, 0.0),
-        reverse=True
-    )
-    bolas_lstm = sorted(candidatos_lstm[:cant_bolas])
-
-    # B. Estrategia Tendencia Pura
-    candidatos_tendencia = sorted(
-        todas_bolas_rango,
-        key=lambda n: tendencia_scores.get(n, 0.0),
-        reverse=True
-    )
-    bolas_tendencia = sorted(candidatos_tendencia[:cant_bolas])
-
     # C. Estrategia Híbrida Adaptativa
     def score_hibrido(n: int) -> float:
         p_lstm = lstm_probs.get(n, 0.0)
@@ -940,7 +924,29 @@ def generar_predicciones_semanales(
         key=score_hibrido,
         reverse=True
     )
-    bolas_hibridas = sorted(candidatos_hibridos[:cant_bolas])
+
+    # Las 3 apuestas de un mismo boleto no deben repetir bolas entre sí.
+    # Además se optimiza la cobertura conjunta del boleto: la selección se limita
+    # al "pool" de los 3*cant_bolas números con mayor puntuación combinada (híbrida)
+    # y cada estrategia elige sus cant_bolas preferidas dentro de ese pool.
+    pool_boleto = candidatos_hibridos[: cant_bolas * 3]
+
+    def _elegir_desde_pool(
+        claves_score: dict[int, float], disponibles: list[int]
+    ) -> list[int]:
+        seleccion = sorted(
+            disponibles,
+            key=lambda n: claves_score.get(n, 0.0),
+            reverse=True,
+        )[:cant_bolas]
+        return sorted(seleccion)
+
+    restantes = pool_boleto
+    bolas_lstm = _elegir_desde_pool(lstm_probs, restantes)
+    restantes = [n for n in restantes if n not in bolas_lstm]
+    bolas_tendencia = _elegir_desde_pool(tendencia_scores, restantes)
+    restantes = [n for n in restantes if n not in bolas_tendencia]
+    bolas_hibridas = _elegir_desde_pool({n: score_hibrido(n) for n in restantes}, restantes)
 
     # 4. Generar números especiales basados en frecuencias de aparición
     # Para cada número especial, tomamos los más frecuentes en el histórico
@@ -959,15 +965,26 @@ def generar_predicciones_semanales(
         
         # Para Euromillones requerimos 2 estrellas por combinación. Para Gordo 1 clave.
         cant_esp = len(cols_esp)
-        
-        # Proponemos variaciones de especiales para las 3 combinaciones
-        # Si no hay suficientes, repetimos los más frecuentes
+
+        # Repartimos los especiales más frecuentes entre las 3 apuestas sin repetir
+        # número entre ellas siempre que haya suficientes distintos.
+        esp_disponibles = [item[0] for item in esp_mas_comunes]
+        esp_usados: set[int] = set()
         for i in range(3):
-            # Tomamos un segmento de los más comunes y lo barajamos o desplazamos para no repetir exactamente lo mismo
-            seleccion = [item[0] for item in esp_mas_comunes[i * cant_esp : (i + 1) * cant_esp]]
+            seleccion = []
+            for n in esp_disponibles:
+                if n not in esp_usados:
+                    esp_usados.add(n)
+                    seleccion.append(n)
+                    if len(seleccion) == cant_esp:
+                        break
+            # Si no hay suficientes especiales distintos, se reutilizan los más frecuentes
             if len(seleccion) < cant_esp:
-                # Fallback al inicio
-                seleccion = [item[0] for item in esp_mas_comunes[:cant_esp]]
+                for n in esp_disponibles:
+                    if n not in seleccion:
+                        seleccion.append(n)
+                        if len(seleccion) == cant_esp:
+                            break
             especiales_sugeridos[i] = sorted(seleccion)
     elif cols_esp:
         # Fallback si no hay frecuencias especiales

@@ -35,10 +35,12 @@
             <thead>
                 <tr class="bg-gray-100 text-gray-600 uppercase text-xs">
                     <th class="text-left p-3">Fecha</th>
+                    <th class="text-left p-3">Tipo</th>
                     <th class="text-left p-3">Bolas Principales</th>
                     {% if ultimos_sorteos.0.especiales %}
                     <th class="text-left p-3">Especiales</th>
                     {% endif %}
+                    <th class="text-left p-3">Máx. aciertos semana</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
@@ -46,6 +48,11 @@
                 <tr class="hover:bg-gray-50 transition-colors">
                     <td class="p-3 font-semibold text-gray-700 whitespace-nowrap">
                         {{ sorteo.fecha|date:"d/m/Y" }}
+                    </td>
+                    <td class="p-3">
+                        <span class="inline-flex items-center px-2.5 py-1 rounded-full bg-primary-50 text-primary-700 font-semibold text-xs">
+                            {{ sorteo.tipo_sorteo|capfirst }}
+                        </span>
                     </td>
                     <td class="p-3">
                         <div class="flex flex-wrap gap-2">
@@ -67,10 +74,21 @@
                         </div>
                     </td>
                     {% endif %}
+                    <td class="p-3">
+                        {% if sorteo.max_aciertos %}
+                        <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-green-500 text-white font-bold text-xs shadow-sm">
+                            {{ sorteo.max_aciertos }}
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-red-500 text-white font-bold text-xs shadow-sm">
+                            0
+                        </span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="3" class="p-4 text-center text-gray-400">Sin sorteos registrados</td>
+                    <td colspan="5" class="p-4 text-center text-gray-400">Sin sorteos registrados</td>
                 </tr>
                 {% endfor %}
             </tbody>
