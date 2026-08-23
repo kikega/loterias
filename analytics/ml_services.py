@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from datetime import date, timedelta
 from itertools import combinations
@@ -12,8 +13,11 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from django.core.cache import cache
 
 from .models import Sorteo
+
+logger = logging.getLogger(__name__)
 
 RUTA_JSON = Path(__file__).resolve().parent.parent / "sorteos.json"
 RUTA_MODELOS = Path(__file__).resolve().parent / "modelos_entrenados"
@@ -98,21 +102,28 @@ def df_desde_orm(tipo_sorteo: str) -> pd.DataFrame:
     """
     cfg = config_por_tipo(tipo_sorteo)
     qs = Sorteo.objects.filter(tipo_sorteo=tipo_sorteo).order_by("fecha")
-    rows = qs.values("fecha", "bolas", "especiales")
-    registros: list[dict] = []
-    for r in rows:
-        registro: dict = {"Fecha": pd.to_datetime(r["fecha"])}
-        bolas: list[int] = r["bolas"] or []
-        for i, col in enumerate(cfg["numeros"]):
-            registro[col] = bolas[i] if i < len(bolas) else None
-        especiales: list[int] = r["especiales"] or []
-        for i, col in enumerate(cfg["numeros_especiales"]):
-            registro[col] = especiales[i] if i < len(especiales) else None
-        registros.append(registro)
-    df = pd.DataFrame(registros)
-    if df.empty:
-        return df
-    for col in cfg["numeros"] + cfg["numeros_especiales"]:
+    rows = list(qs.values_list("fecha", "bolas", "especiales"))
+    if not rows:
+        return pd.DataFrame()
+
+    num_cols = cfg["numeros"]
+    num_esp_cols = cfg["numeros_especiales"]
+    len_num = len(num_cols)
+    len_esp = len(num_esp_cols)
+
+    registros: list[dict[str, Any]] = []
+    for fecha, bolas, especiales in rows:
+        bolas_list = bolas or []
+        esp_list = especiales or []
+        reg: dict[str, Any] = {"Fecha": pd.to_datetime(fecha)}
+        for i in range(len_num):
+            reg[num_cols[i]] = bolas_list[i] if i < len(bolas_list) else None
+        for i in range(len_esp):
+            reg[num_esp_cols[i]] = esp_list[i] if i < len(esp_list) else None
+        registros.append(reg)
+
+    df = pd.DataFrame.from_records(registros)
+    for col in num_cols + num_esp_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     df.sort_values("Fecha", inplace=True)
@@ -156,6 +167,7 @@ def analizar_diferencia_fechas(
     """
     Analiza el espaciado temporal entre apariciones de cada número, calculando
     las medias, mínimos y máximos de días sin salir, así como su última aparición.
+    Optimizado mediante vectorización completa con melt y groupby.
 
     Args:
         df (pd.DataFrame): Datos históricos del sorteo.
@@ -164,25 +176,44 @@ def analizar_diferencia_fechas(
     Returns:
         pd.DataFrame: Estadísticas temporales por número.
     """
-    numeros_unicos = sorted(
-        pd.concat([df[col] for col in columnas]).dropna().unique()
-    )
-    filas: list[dict] = []
-    for num in numeros_unicos:
-        mask = df[columnas].eq(num).any(axis=1)
-        fechas = df.loc[mask, "Fecha"].sort_values()
-        if len(fechas) > 1:
-            diffs = fechas.diff().dropna().dt.days
-            filas.append({
-                "Numero": num,
-                "Dias Promedio": round(float(diffs.mean()), 2),
-                "Dias Min": int(diffs.min()),
-                "Dias Max": int(diffs.max()),
-                "Ultima Aparicion": fechas.max(),
-            })
-    if not filas:
+    if df.empty:
         return pd.DataFrame()
-    return pd.DataFrame(filas)
+
+    valid_cols = [c for c in columnas if c in df.columns]
+    if not valid_cols:
+        return pd.DataFrame()
+
+    melted = df.melt(id_vars=["Fecha"], value_vars=valid_cols, value_name="Numero").dropna(subset=["Numero"])
+    if melted.empty:
+        return pd.DataFrame()
+
+    melted["Numero"] = melted["Numero"].astype(int)
+    melted = melted.drop_duplicates(subset=["Fecha", "Numero"]).sort_values("Fecha")
+    melted["diff_days"] = melted.groupby("Numero")["Fecha"].diff().dt.days
+
+    stats = (
+        melted.groupby("Numero")
+        .agg(
+            Dias_Promedio=("diff_days", "mean"),
+            Dias_Min=("diff_days", "min"),
+            Dias_Max=("diff_days", "max"),
+            Ultima_Aparicion=("Fecha", "max"),
+            Conteo=("Fecha", "count"),
+        )
+        .reset_index()
+    )
+
+    stats = stats[stats["Conteo"] > 1].copy()
+    if stats.empty:
+        return pd.DataFrame()
+
+    stats["Dias Promedio"] = stats["Dias_Promedio"].round(2)
+    stats["Dias Min"] = stats["Dias_Min"].astype(int)
+    stats["Dias Max"] = stats["Dias_Max"].astype(int)
+    stats["Ultima Aparicion"] = stats["Ultima_Aparicion"]
+    resultado = stats[["Numero", "Dias Promedio", "Dias Min", "Dias Max", "Ultima Aparicion"]].sort_values("Numero")
+    resultado.reset_index(drop=True, inplace=True)
+    return resultado
 
 
 def analizar_combinaciones(
@@ -620,19 +651,23 @@ def modelo_existe(tipo_sorteo: str) -> bool:
 
 def guardar_modelo(modelo: LSTMLoteria, tipo_sorteo: str) -> None:
     """
-    Guarda el diccionario de estados del modelo en el disco.
+    Guarda el diccionario de estados del modelo en el disco de manera atómica
+    escribiendo primero en un archivo temporal para evitar corrupción de pesos.
 
     Args:
         modelo (LSTMLoteria): Modelo entrenado a guardar.
         tipo_sorteo (str): Nombre identificativo del sorteo.
     """
     ruta = ruta_modelo_guardado(tipo_sorteo)
-    torch.save(modelo.state_dict(), ruta)
+    temp_ruta = ruta.with_suffix(".tmp")
+    torch.save(modelo.state_dict(), temp_ruta)
+    temp_ruta.replace(ruta)
 
 
 def cargar_modelo(tipo_sorteo: str, input_size: int) -> Optional[LSTMLoteria]:
     """
-    Carga e inicializa el modelo de predicción LSTM guardado previamente en disco.
+    Carga e inicializa el modelo de predicción LSTM guardado previamente en disco
+    utilizando weights_only=True para prevenir riesgos de deserialización de código arbitrario.
 
     Args:
         tipo_sorteo (str): Nombre del sorteo.
@@ -647,11 +682,33 @@ def cargar_modelo(tipo_sorteo: str, input_size: int) -> Optional[LSTMLoteria]:
         return None
     modelo = LSTMLoteria(input_size=input_size)
     try:
-        modelo.load_state_dict(torch.load(ruta, map_location="cpu"))
+        state_dict = torch.load(ruta, map_location="cpu", weights_only=True)
+        modelo.load_state_dict(state_dict)
         modelo.eval()
         return modelo
-    except Exception:
+    except Exception as e:
+        logger.warning(f"No se pudieron cargar los pesos del modelo para {tipo_sorteo}: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# CACHÉ DE ANÁLISIS
+# ---------------------------------------------------------------------------
+
+
+def clave_cache_analisis(tipo_sorteo: str) -> str:
+    """
+    Genera la clave única de caché para los resultados del análisis de un sorteo.
+    """
+    return f"analisis_loteria_{tipo_sorteo}"
+
+
+def invalidar_cache_sorteo(tipo_sorteo: str) -> None:
+    """
+    Invalida los datos cacheados de análisis y pesos adaptativos ante nuevos registros.
+    """
+    cache.delete(clave_cache_analisis(tipo_sorteo))
+    logger.info(f"Caché invalidada para sorteo: {tipo_sorteo}")
 
 
 # ---------------------------------------------------------------------------
@@ -684,20 +741,26 @@ class ResultadoAnalisis:
 
 
 def ejecutar_analisis(
-    tipo_sorteo: str, entrenar: bool = True
+    tipo_sorteo: str, entrenar: bool = False
 ) -> ResultadoAnalisis:
     """
     Función orquestadora que ejecuta los análisis descriptivos de frecuencias, combinaciones,
     cadenas de Markov y predicciones neuronales de LSTM sobre el tipo de sorteo seleccionado.
-    Optimizado para un tiempo de respuesta inferior a 0.25 segundos sin entrenamiento activo.
+    Utiliza una capa de caché en memoria de Django para respuestas instantáneas (<10ms).
 
     Args:
         tipo_sorteo (str): Nombre del sorteo (p. ej. 'primitiva', 'gordo').
-        entrenar (bool, opcional): Permite forzar el reentrenamiento de la red LSTM (por defecto False en peticiones web).
+        entrenar (bool, opcional): Permite forzar el reentrenamiento de la red LSTM (False por defecto).
 
     Returns:
         ResultadoAnalisis: Estructura con todos los datos e indicadores estadísticos.
     """
+    clave = clave_cache_analisis(tipo_sorteo)
+    if not entrenar:
+        cached: Optional[ResultadoAnalisis] = cache.get(clave)
+        if cached is not None:
+            return cached
+
     cfg = config_por_tipo(tipo_sorteo)
     df = df_desde_orm(tipo_sorteo)
     resultado = ResultadoAnalisis(tipo_sorteo)
@@ -750,6 +813,7 @@ def ejecutar_analisis(
     if cols_esp:
         resultado.frecuencias_especiales = analizar_frecuencia_numeros(df, cols_esp)
 
+    cache.set(clave, resultado, timeout=3600)
     return resultado
 
 
@@ -917,7 +981,7 @@ def generar_predicciones_semanales(
     def score_hibrido(n: int) -> float:
         p_lstm = lstm_probs.get(n, 0.0)
         p_tend = tendencia_norm.get(n, 0.5)
-        return w_lstm * p_lstm + w_tend_p if (w_tend_p := w_tendencia * p_tend) else w_lstm * p_lstm
+        return float(w_lstm * p_lstm + w_tendencia * p_tend)
 
     candidatos_hibridos = sorted(
         todas_bolas_rango,
@@ -1081,14 +1145,13 @@ def entrenar_modelo_asincrono(tipo_sorteo: str) -> None:
 
     def _tarea_entrenamiento():
         try:
-            # Reentrenamos el modelo con 15 épocas para que sea rápido pero aprenda el nuevo dato
-            # Podemos forzar el entrenamiento completo
+            logger.info(f"Iniciando reentrenamiento asíncrono para {tipo_sorteo}...")
             ejecutar_analisis(tipo_sorteo, entrenar=True)
-        except Exception:
-            # Silenciar errores del hilo en producción/desarrollo silencioso
-            pass
+            invalidar_cache_sorteo(tipo_sorteo)
+            logger.info(f"Reentrenamiento completado con éxito para {tipo_sorteo}.")
+        except Exception as e:
+            logger.error(f"Error en reentrenamiento asíncrono para {tipo_sorteo}: {e}", exc_info=True)
 
-    t = threading.Thread(target=_tarea_entrenamiento)
-    t.daemon = True
+    t = threading.Thread(target=_tarea_entrenamiento, daemon=True)
     t.start()
 

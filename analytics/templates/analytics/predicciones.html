@@ -6,28 +6,31 @@
 {% block content %}
 <div class="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
     <div>
-        <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight mb-2 flex items-center gap-2">
-            <span class="bg-primary-100 text-primary-700 px-3 py-1 rounded-lg text-xl font-bold">W{{ semana }}</span>
+        <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight mb-1 flex items-center gap-2.5">
+            <span class="bg-primary-50 text-primary-700 border border-primary-200 px-3 py-1 rounded-xl text-lg font-bold">W{{ semana }}</span>
             Predicciones Semanales Estimadas
         </h1>
-        <p class="text-gray-500">Generación inteligente de combinaciones y evaluación de aprendizaje adaptativo.</p>
+        <p class="text-sm text-gray-500">Generación inteligente de combinaciones y calibración de aprendizaje adaptativo.</p>
     </div>
-    
-    <!-- Navegación de Semanas -->
-    <div class="flex items-center gap-2 bg-white rounded-xl shadow-sm p-1.5 border border-gray-100 self-start md:self-auto">
+
+    <!-- Navegación de Semanas (Control de Calendario Estilizado) -->
+    <div class="flex items-center gap-1.5 bg-white rounded-2xl shadow-sm px-2 py-1.5 border border-gray-200/80 self-start md:self-auto">
         <a href="?tipo={{ tipo_activo }}&anio={{ prev_anio }}&semana={{ prev_semana }}"
-           class="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
+           class="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
            title="Semana Anterior">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
             </svg>
         </a>
-        <span class="px-3 font-semibold text-gray-700 text-sm">Año {{ anio }} — Semana {{ semana }}</span>
+        <div class="px-3 py-0.5 text-center min-w-[150px]">
+            <div class="text-xs font-bold text-gray-800 tracking-tight">Semana {{ semana }} &middot; {{ anio }}</div>
+            <div class="text-[11px] font-semibold text-primary-600">{{ rango_semana }}</div>
+        </div>
         <a href="?tipo={{ tipo_activo }}&anio={{ next_anio }}&semana={{ next_semana }}"
-           class="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
+           class="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
            title="Semana Siguiente">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
             </svg>
         </a>
     </div>
@@ -37,23 +40,24 @@
 <div class="flex flex-wrap gap-2 border-b border-gray-200 pb-3 mb-6">
     {% for tipo in tipos %}
     <a href="?tipo={{ tipo }}&anio={{ anio }}&semana={{ semana }}"
-       class="px-5 py-2.5 rounded-lg text-sm font-semibold transition-all {% if tipo == tipo_activo %}bg-primary-600 text-white shadow-md{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-900{% endif %}">
+        class="px-5 py-2.5 rounded-lg text-sm font-semibold transition-all {% if tipo == tipo_activo %}bg-primary-600 text-white shadow-md{% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-900{% endif %}">
         {{ tipo|upper }}
     </a>
     {% endfor %}
 </div>
 
 <!-- Contenedor principal con HTMX para carga diferida y navegación -->
-<div id="predicciones-container" 
-     hx-get="{% url 'predicciones_content' %}?tipo={{ tipo_activo }}&anio={{ anio }}&semana={{ semana }}" 
-     hx-trigger="load" 
-     hx-swap="innerHTML"
-     class="min-h-[400px]">
+<div id="predicciones-container"
+    hx-get="{% url 'predicciones_content' %}?tipo={{ tipo_activo }}&anio={{ anio }}&semana={{ semana }}"
+    hx-trigger="load" hx-swap="innerHTML" class="min-h-[400px]">
     <!-- Spinner de carga inicial -->
     <div class="flex flex-col items-center justify-center py-24">
-        <svg class="animate-spin h-10 w-10 text-primary-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <svg class="animate-spin h-10 w-10 text-primary-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+            viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            <path class="opacity-75" fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+            </path>
         </svg>
         <span class="text-gray-500 font-medium">Analizando datos y calibrando pesos adaptativos...</span>
     </div>

@@ -39,9 +39,12 @@
                     </a>
                     <span class="text-primary-200 text-sm hidden sm:inline">|</span>
                     <span class="text-primary-100 text-sm font-semibold hidden sm:inline">Hola, {{ user.username }}</span>
-                    <a href="{% url 'logout' %}" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-sm font-medium transition shadow-md">
-                        Cerrar Sesión
-                    </a>
+                    <form method="post" action="{% url 'logout' %}" class="inline">
+                        {% csrf_token %}
+                        <button type="submit" class="bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-sm font-medium transition shadow-md text-white cursor-pointer">
+                            Cerrar Sesión
+                        </button>
+                    </form>
                     {% endif %}
                 </div>
             </div>

@@ -17,10 +17,12 @@ class Command(BaseCommand):
             *args: Argumentos posicionales adicionales.
             **options: Opciones pasadas al comando.
         """
+        import os
+
         User = get_user_model()
-        username = "admin"
-        email = "admin@example.com"
-        password = "admin1234"
+        username = os.getenv("DJANGO_ADMIN_USERNAME", "admin")
+        email = os.getenv("DJANGO_ADMIN_EMAIL", "admin@example.com")
+        password = os.getenv("DJANGO_ADMIN_PASSWORD", "admin1234")
 
         if not User.objects.filter(username=username).exists():
             self.stdout.write(f"Creando usuario administrador '{username}'...")
@@ -29,7 +31,7 @@ class Command(BaseCommand):
             )
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"Éxito: Se ha creado el usuario '{username}' con contraseña '{password}'."
+                    f"Éxito: Se ha creado el superusuario '{username}'."
                 )
             )
         else:

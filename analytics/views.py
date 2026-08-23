@@ -1,12 +1,15 @@
 import json
 import datetime
-from typing import Any
+import logging
+from typing import Any, Optional
 
 import pandas as pd
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.http import require_POST
 
 from .forms import construir_formulario_sorteo
 from .ml_services import (
@@ -17,8 +20,11 @@ from .ml_services import (
     obtener_anio_semana_iso,
     obtener_pesos_adaptativos,
     generar_predicciones_semanales,
+    invalidar_cache_sorteo,
 )
 from .models import Sorteo, PrediccionSemanal, CombinacionPredicha
+
+logger = logging.getLogger(__name__)
 
 
 def _limpiar_nombre_col(name: str) -> str:
@@ -254,7 +260,7 @@ def insertar_sorteo(request: HttpRequest) -> HttpResponse:
 def login_view(request: HttpRequest) -> HttpResponse:
     """
     Vista de autenticación de usuarios. Valida credenciales e inicia sesión redirigiendo
-    al panel de control o a la página solicitada de origen.
+    al panel de control o a la página solicitada de origen de forma segura.
 
     Args:
         request (HttpRequest): Solicitud HTTP de Django.
@@ -267,13 +273,20 @@ def login_view(request: HttpRequest) -> HttpResponse:
 
     error = None
     if request.method == "POST":
-        usuario = request.POST.get("username")
-        clave = request.POST.get("password")
+        usuario = request.POST.get("username", "").strip()
+        clave = request.POST.get("password", "")
         user = authenticate(request, username=usuario, password=clave)
         if user is not None:
             login(request, user)
-            next_url = request.GET.get("next", "dashboard")
-            return redirect(next_url)
+            next_url = request.POST.get("next") or request.GET.get("next", "dashboard")
+            # Validación estricta contra ataques de Open Redirect
+            if next_url and url_has_allowed_host_and_scheme(
+                url=next_url,
+                allowed_hosts={request.get_host()},
+                require_https=request.is_secure(),
+            ):
+                return redirect(next_url)
+            return redirect("dashboard")
         else:
             error = "Usuario o contraseña incorrectos."
 
@@ -283,6 +296,7 @@ def login_view(request: HttpRequest) -> HttpResponse:
 def logout_view(request: HttpRequest) -> HttpResponse:
     """
     Vista para cerrar la sesión activa del usuario y redirigir a la pantalla de login.
+    Soporta cierre de sesión seguro tanto por POST como por GET.
 
     Args:
         request (HttpRequest): Solicitud HTTP de Django.
@@ -290,8 +304,28 @@ def logout_view(request: HttpRequest) -> HttpResponse:
     Returns:
         HttpResponse: Redirección al panel de inicio de sesión.
     """
-    logout(request)
+    if request.user.is_authenticated:
+        logout(request)
     return redirect("login")
+
+
+MESES_ES = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+
+def _formatear_rango_semana(fecha_inicio: datetime.date, fecha_fin: datetime.date) -> str:
+    """
+    Formatea el rango de fechas de una semana en español (p. ej. '17-Ago a 23-Ago').
+
+    Args:
+        fecha_inicio (datetime.date): Lunes de la semana.
+        fecha_fin (datetime.date): Domingo de la semana.
+
+    Returns:
+        str: Cadena formateada del rango.
+    """
+    inicio_str = f"{fecha_inicio.day}-{MESES_ES[fecha_inicio.month]}"
+    fin_str = f"{fecha_fin.day}-{MESES_ES[fecha_fin.month]}"
+    return f"{inicio_str} a {fin_str}"
 
 
 @login_required
@@ -323,6 +357,9 @@ def panel_predicciones(request: HttpRequest) -> HttpResponse:
         anio, semana = hoy.isocalendar()[0], hoy.isocalendar()[1]
         d_ref = datetime.date.fromisocalendar(anio, semana, 1)
 
+    d_end = datetime.date.fromisocalendar(anio, semana, 7)
+    rango_semana = _formatear_rango_semana(d_ref, d_end)
+
     # Calcular semanas anterior y posterior
     prev_d = d_ref - datetime.timedelta(weeks=1)
     next_d = d_ref + datetime.timedelta(weeks=1)
@@ -334,6 +371,9 @@ def panel_predicciones(request: HttpRequest) -> HttpResponse:
         "tipo_activo": tipo,
         "anio": anio,
         "semana": semana,
+        "fecha_inicio": d_ref,
+        "fecha_fin": d_end,
+        "rango_semana": rango_semana,
         "prev_anio": prev_anio,
         "prev_semana": prev_semana,
         "next_anio": next_anio,
@@ -343,30 +383,44 @@ def panel_predicciones(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
-def predicciones_content(request: HttpRequest) -> HttpResponse:
+def predicciones_content(
+    request: HttpRequest,
+    tipo: Optional[str] = None,
+    anio: Optional[int] = None,
+    semana: Optional[int] = None,
+) -> HttpResponse:
     """
     Vista invocada por HTMX que renderiza el panel de predicciones detallado.
     Calcula los aciertos de la semana, las estadísticas de aprendizaje y los pesos adaptativos.
 
     Args:
         request (HttpRequest): Solicitud HTTP.
+        tipo (str, opcional): Tipo de sorteo predefinido.
+        anio (int, opcional): Año predefinido.
+        semana (int, opcional): Semana predefinida.
 
     Returns:
         HttpResponse: Parcial HTML con las combinaciones y el aprendizaje.
     """
-    tipo = request.GET.get("tipo", "primitiva")
+    if tipo is None:
+        tipo = request.GET.get("tipo", "primitiva")
     if tipo not in tipos_disponibles():
         tipo = "primitiva"
 
     hoy = datetime.date.today()
-    try:
-        anio = int(request.GET.get("anio", hoy.isocalendar()[0]))
-        semana = int(request.GET.get("semana", hoy.isocalendar()[1]))
-        lunes_semana = datetime.date.fromisocalendar(anio, semana, 1)
-        domingo_semana = datetime.date.fromisocalendar(anio, semana, 7)
-    except Exception:
-        anio = hoy.isocalendar()[0]
-        semana = hoy.isocalendar()[1]
+    if anio is None or semana is None:
+        try:
+            anio_val = int(request.GET.get("anio", hoy.isocalendar()[0]))
+            semana_val = int(request.GET.get("semana", hoy.isocalendar()[1]))
+            lunes_semana = datetime.date.fromisocalendar(anio_val, semana_val, 1)
+            domingo_semana = datetime.date.fromisocalendar(anio_val, semana_val, 7)
+            anio, semana = anio_val, semana_val
+        except Exception:
+            anio = hoy.isocalendar()[0]
+            semana = hoy.isocalendar()[1]
+            lunes_semana = datetime.date.fromisocalendar(anio, semana, 1)
+            domingo_semana = datetime.date.fromisocalendar(anio, semana, 7)
+    else:
         lunes_semana = datetime.date.fromisocalendar(anio, semana, 1)
         domingo_semana = datetime.date.fromisocalendar(anio, semana, 7)
 
@@ -409,6 +463,8 @@ def predicciones_content(request: HttpRequest) -> HttpResponse:
         elif c.estrategia == "tendencia_pura":
             total_aciertos_tendencia += total_c
 
+    rango_semana = _formatear_rango_semana(lunes_semana, domingo_semana)
+
     ctx = {
         "prediccion": prediccion,
         "combinaciones": combinaciones,
@@ -422,11 +478,15 @@ def predicciones_content(request: HttpRequest) -> HttpResponse:
         "tipo_activo": tipo,
         "anio": anio,
         "semana": semana,
+        "fecha_inicio": lunes_semana,
+        "fecha_fin": domingo_semana,
+        "rango_semana": rango_semana,
     }
     return render(request, "analytics/predicciones_content.html", ctx)
 
 
 @login_required
+@require_POST
 def generar_predicciones_view(request: HttpRequest) -> HttpResponse:
     """
     Vista POST que genera las predicciones para una semana dada
@@ -438,26 +498,29 @@ def generar_predicciones_view(request: HttpRequest) -> HttpResponse:
     Returns:
         HttpResponse: Contenido HTML parcial del panel.
     """
-    if request.method == "POST":
-        tipo = request.POST.get("tipo", "primitiva")
-        try:
-            anio = int(request.POST.get("anio"))
-            semana = int(request.POST.get("semana"))
-            generar_predicciones_semanales(tipo, anio, semana)
-        except Exception:
-            pass
+    tipo = request.POST.get("tipo", "primitiva")
+    if tipo not in tipos_disponibles():
+        tipo = "primitiva"
 
-    # Reutilizar la vista content para renderizar el panel actualizado
-    request.GET = request.POST.copy()
-    return predicciones_content(request)
+    hoy = datetime.date.today()
+    try:
+        anio = int(request.POST.get("anio", str(hoy.isocalendar()[0])))
+        semana = int(request.POST.get("semana", str(hoy.isocalendar()[1])))
+        generar_predicciones_semanales(tipo, anio, semana)
+    except Exception as e:
+        logger.error(f"Error al generar predicciones semanales ({tipo}): {e}", exc_info=True)
+        anio = hoy.isocalendar()[0]
+        semana = hoy.isocalendar()[1]
+
+    return predicciones_content(request, tipo=tipo, anio=anio, semana=semana)
 
 
 @login_required
+@require_POST
 def reentrenar_modelo_view(request: HttpRequest) -> HttpResponse:
     """
     Vista POST que ejecuta el entrenamiento completo de la LSTM del sorteo
-    seleccionado de forma síncrona en CPU (rápido en sets pequeños) y devuelve
-    un mensaje de éxito o error con un estilo cuidado.
+    seleccionado de forma síncrona en CPU y devuelve un mensaje de estado.
 
     Args:
         request (HttpRequest): Solicitud HTTP.
@@ -465,20 +528,29 @@ def reentrenar_modelo_view(request: HttpRequest) -> HttpResponse:
     Returns:
         HttpResponse: Fragmento HTML de estado del entrenamiento.
     """
-    if request.method == "POST":
-        tipo = request.POST.get("tipo", "primitiva")
-        try:
-            ejecutar_analisis(tipo, entrenar=True)
-            return HttpResponse(
-                '<div class="bg-emerald-50 text-emerald-800 text-xs font-semibold rounded-xl p-3.5 border border-emerald-200 transition shadow-sm">'
-                '✓ Modelo neuronal entrenado y guardado correctamente.'
-                '</div>'
-            )
-        except Exception as e:
-            return HttpResponse(
-                f'<div class="bg-red-50 text-red-800 text-xs font-semibold rounded-xl p-3.5 border border-red-200 transition shadow-sm">'
-                f'✗ Error al entrenar el modelo: {str(e)}'
-                f'</div>'
-            )
-    return HttpResponse(status=405)
+    tipo = request.POST.get("tipo", "primitiva")
+    if tipo not in tipos_disponibles():
+        return HttpResponse(
+            '<div class="bg-red-50 text-red-800 text-xs font-semibold rounded-xl p-3.5 border border-red-200 transition shadow-sm">'
+            '✗ Error: Tipo de sorteo no reconocido.'
+            '</div>',
+            status=400,
+        )
+
+    try:
+        ejecutar_analisis(tipo, entrenar=True)
+        invalidar_cache_sorteo(tipo)
+        return HttpResponse(
+            '<div class="bg-emerald-50 text-emerald-800 text-xs font-semibold rounded-xl p-3.5 border border-emerald-200 transition shadow-sm">'
+            '✓ Modelo neuronal entrenado y guardado correctamente.'
+            '</div>'
+        )
+    except Exception as e:
+        logger.error(f"Error al entrenar el modelo '{tipo}': {e}", exc_info=True)
+        return HttpResponse(
+            f'<div class="bg-red-50 text-red-800 text-xs font-semibold rounded-xl p-3.5 border border-red-200 transition shadow-sm">'
+            f'✗ Error al entrenar el modelo: {str(e)}'
+            f'</div>',
+            status=500,
+        )
 

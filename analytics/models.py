@@ -98,11 +98,17 @@ from django.dispatch import receiver
 def al_guardar_sorteo(sender, instance, created, **kwargs):
     """
     Señal que se dispara después de guardar un sorteo.
-    Calcula los aciertos de la predicción de la semana correspondiente
+    Invalida la caché analítica, calcula los aciertos de la predicción de la semana correspondiente
     e inicia el reentrenamiento de la red LSTM de manera asíncrona.
     """
     if created:
-        from .ml_services import evaluar_predicciones_semana, entrenar_modelo_asincrono
+        from .ml_services import (
+            evaluar_predicciones_semana,
+            entrenar_modelo_asincrono,
+            invalidar_cache_sorteo,
+        )
+        # Invalidar caché de análisis para reflejar el nuevo sorteo
+        invalidar_cache_sorteo(instance.tipo_sorteo)
         # Evaluar predicción de la semana
         evaluar_predicciones_semana(instance)
         # Reentrenar modelo de manera asíncrona

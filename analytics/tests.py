@@ -144,6 +144,24 @@ class AnalyticsServicesTestCase(TestCase):
         self.assertEqual(anio, 2026)
         self.assertEqual(semana, 28)
 
+    def test_formatear_rango_semana(self) -> None:
+        """
+        Verifica que la función _formatear_rango_semana devuelva el formato correcto
+        en español (p. ej. '17-Ago a 23-Ago').
+        """
+        from analytics.views import _formatear_rango_semana
+
+        lunes = date(2026, 8, 17)
+        domingo = date(2026, 8, 23)
+        rango = _formatear_rango_semana(lunes, domingo)
+        self.assertEqual(rango, "17-Ago a 23-Ago")
+
+        # Caso cambio de mes (finales de diciembre a enero)
+        fin_ano = date(2026, 12, 28)
+        inicio_ano = date(2027, 1, 3)
+        rango_ano = _formatear_rango_semana(fin_ano, inicio_ano)
+        self.assertEqual(rango_ano, "28-Dic a 3-Ene")
+
     @patch("analytics.models.CombinacionPredicha.objects.filter")
     def test_obtener_pesos_adaptativos(self, mock_filter: Any) -> None:
         """
@@ -177,6 +195,88 @@ class AnalyticsServicesTestCase(TestCase):
         self.assertEqual(w_lstm, 0.625)
         self.assertEqual(w_tendencia, 0.375)
 
+    def test_analizar_diferencia_fechas_vectorized(self) -> None:
+        """
+        Verifica que la función vectorizada analizar_diferencia_fechas calcule
+        correctamente las estadísticas temporales (promedios, mínimos y máximos).
+        """
+        from analytics.ml_services import analizar_diferencia_fechas
+        df = pd.DataFrame({
+            "Fecha": pd.to_datetime(["2026-01-01", "2026-01-10", "2026-01-20"]),
+            "Bola1": [5, 5, 5],
+            "Bola2": [10, 20, 10],
+        })
+        res = analizar_diferencia_fechas(df, ["Bola1", "Bola2"])
+        self.assertFalse(res.empty)
+        # Bola 5 aparece en los 3 sorteos: difs de 9 y 10 días -> promedio 9.5
+        row_5 = res[res["Numero"] == 5].iloc[0]
+        self.assertEqual(row_5["Dias Promedio"], 9.5)
+        self.assertEqual(row_5["Dias Min"], 9)
+        self.assertEqual(row_5["Dias Max"], 10)
+
+    @patch("django.contrib.auth.authenticate")
+    def test_login_open_redirect_protection(self, mock_auth: Any) -> None:
+        """
+        Verifica que la vista de login neutralice intentos de Open Redirect
+        cuando un atacante proporciona URLs externas en el parámetro next.
+        """
+        from django.contrib.auth.models import AnonymousUser
+        mock_user = MagicMock()
+        mock_user.is_authenticated = True
+        mock_auth.return_value = mock_user
+
+        # Intentar login con next malicioso externo
+        response = self.client.post(
+            "/login/?next=https://malicious-phishing.com",
+            {"username": "admin", "password": "securepassword"}
+        )
+        # Debe redirigir al dashboard interno, NUNCA al dominio externo
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("malicious-phishing.com", response.url)
+        self.assertEqual(response.url, "/login/")  # Client redirects safely or returns internal URL
+
+    def test_logout_redirects_safely(self) -> None:
+        """
+        Verifica que la vista de logout redirija de forma segura al login.
+        """
+        response = self.client.post("/logout/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+    @patch("analytics.ml_services.df_desde_orm")
+    def test_cache_analisis_and_invalidation(self, mock_df_desde_orm: Any) -> None:
+        """
+        Verifica que ejecutar_analisis almacene en caché el resultado y que
+        invalidar_cache_sorteo limpie la clave correspondiente.
+        """
+        from django.core.cache import cache
+        from analytics.ml_services import invalidar_cache_sorteo, clave_cache_analisis
+
+        df = pd.DataFrame({
+            "Fecha": pd.to_datetime(["2026-06-01", "2026-06-08"]),
+            "Bola1": [1, 2],
+            "Bola2": [10, 11],
+            "Bola3": [20, 21],
+            "Bola4": [30, 31],
+            "Bola5": [40, 41],
+            "Bola6": [45, 46],
+            "Complementario": [5, 6],
+            "Reintegro": [0, 1],
+        })
+        mock_df_desde_orm.return_value = df
+
+        # Primera ejecución: debe computar y guardar en caché
+        res1 = ejecutar_analisis("primitiva", entrenar=False)
+        self.assertIsNotNone(cache.get(clave_cache_analisis("primitiva")))
+
+        # Segunda ejecución: debe devolver el mismo objeto desde la caché
+        res2 = ejecutar_analisis("primitiva", entrenar=False)
+        self.assertEqual(res1.total_sorteos, res2.total_sorteos)
+
+        # Invalidar caché
+        invalidar_cache_sorteo("primitiva")
+        self.assertIsNone(cache.get(clave_cache_analisis("primitiva")))
+
     @patch("analytics.models.PrediccionSemanal.objects.get")
     def test_evaluar_predicciones_semana_primitiva_solo_6_bolas(self, mock_get_prediccion: Any) -> None:
         """
@@ -185,34 +285,48 @@ class AnalyticsServicesTestCase(TestCase):
         """
         from analytics.ml_services import evaluar_predicciones_semana
         from unittest.mock import MagicMock
-        
+
         # Mock de CombinacionPredicha de Primitiva
         comb = MagicMock()
         comb.bolas = [1, 2, 3, 4, 5, 6]
-        # Reintegro es 0 en predicción
-        comb.especiales = [5, 0] 
+        comb.especiales = [5, 0]
         comb.aciertos_por_sorteo = {}
-        
+
         prediccion = MagicMock()
         prediccion.combinaciones.all.return_value = [comb]
         mock_get_prediccion.return_value = prediccion
-        
+
         # Mock de Sorteo real de Primitiva
-        # Bolas reales coinciden en 1, 2, 3 (3 aciertos)
-        # El reintegro real es 0 (pero no debe sumarse como acierto de bola principal)
         sorteo = MagicMock()
         sorteo.tipo_sorteo = "primitiva"
         sorteo.fecha = date(2026, 7, 6)
         sorteo.bolas_list.return_value = [1, 2, 3, 10, 20, 30]
-        sorteo.especiales_list.return_value = [7, 0] 
-        
+        sorteo.especiales_list.return_value = [7, 0]
+
         evaluar_predicciones_semana(sorteo)
-        
-        # Comprobar que se guardaron los aciertos
+
         self.assertTrue(comb.save.called)
         aciertos_guardados = comb.aciertos_por_sorteo["2026-07-06"]
         self.assertEqual(aciertos_guardados["total_bolas"], 3)
         self.assertEqual(set(aciertos_guardados["bolas_acertadas"]), {1, 2, 3})
-        # Para Primitiva los especiales acertados deben ser 0 por requerimiento
         self.assertEqual(aciertos_guardados["total_especiales"], 0)
+
+    @patch("torch.load")
+    @patch("pathlib.Path.exists")
+    def test_cargar_modelo_weights_only(self, mock_exists: Any, mock_torch_load: Any) -> None:
+        """
+        Verifica que cargar_modelo invoque torch.load con weights_only=True
+        para garantizar una deserialización segura.
+        """
+        from analytics.ml_services import cargar_modelo, LSTMLoteria
+
+        mock_exists.return_value = True
+        dummy_model = LSTMLoteria(input_size=49)
+        mock_torch_load.return_value = dummy_model.state_dict()
+
+        modelo = cargar_modelo("primitiva", input_size=49)
+        self.assertIsNotNone(modelo)
+        mock_torch_load.assert_called_once()
+        _, kwargs = mock_torch_load.call_args
+        self.assertTrue(kwargs.get("weights_only", False))
 

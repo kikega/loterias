@@ -7,7 +7,7 @@
     </div>
     <h3 class="text-lg font-bold text-gray-900 mb-2">No hay predicciones generadas</h3>
     <p class="text-gray-500 max-w-md mx-auto mb-6 text-sm">
-        Aún no has estimado las combinaciones para la semana {{ semana }} del año {{ anio }} en el sorteo {{ tipo_activo|capfirst }}.
+        Aún no has estimado las combinaciones para la semana {{ semana }} ({{ rango_semana }}) del año {{ anio }} en el sorteo {{ tipo_activo|capfirst }}.
     </p>
     
     <form hx-post="{% url 'generar_predicciones' %}" 
@@ -111,7 +111,7 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <!-- Sorteos reales celebrados en la semana -->
     <div class="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm">
-        <h3 class="text-lg font-bold text-gray-900 mb-4">Sorteos de esta Semana</h3>
+        <h3 class="text-lg font-bold text-gray-900 mb-4">Sorteos de esta Semana ({{ rango_semana }})</h3>
         {% if sorteos_semana %}
             <div class="divide-y divide-gray-100">
                 {% for sorteo in sorteos_semana %}

@@ -1,50 +1,14 @@
 """
-analisis_loteria_v2.py
-======================
-Script educativo para el análisis estadístico de sorteos de lotería.
-
-AVISO: Este script calcula TENDENCIAS ESTADÍSTICAS basadas en históricos.
-Los sorteos son eventos independientes. Ningún modelo matemático puede
-predecir el resultado de un sorteo real.
-
-Dependencias:
-    pip install pandas numpy torch pydantic pydantic-settings \
-                sqlalchemy psycopg2-binary python-dotenv
+DEPRECADO: Este script ha sido migrado y modularizado en la aplicación Django 'analytics'.
+Toda la lógica activa de análisis, predicciones y redes neuronales se encuentra en:
+analytics/ml_services.py
 """
+import sys
 
-from __future__ import annotations
-
-import warnings
-from collections import Counter
-from datetime import date, timedelta
-from itertools import combinations
-from pathlib import Path
-from typing import Optional
-
-import numpy as np
-import pandas as pd
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
-
-# --- Pydantic & SQLAlchemy ---
-from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import BaseModel
-from sqlalchemy import (
-    Column, Date, Integer, String, SmallInteger,
-    create_engine, text
-)
-from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-# ---------------------------------------------------------------------------
-# CONSTANTES
-# ---------------------------------------------------------------------------
-
-RUTA_JSON = Path("sorteos.json")
+if __name__ == "__main__":
+    print("AVISO: Este script ha sido integrado en la app Django 'analytics'.")
+    print("Usa: python manage.py entrenar_modelos o accede al Dashboard web.")
+    sys.exit(0)
 
 
 # ===========================================================================
