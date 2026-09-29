@@ -24,11 +24,14 @@ class SorteoForm(forms.Form):
     fecha = forms.DateField(
         label="Fecha del sorteo",
         initial=date.today,
+        input_formats=["%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%Y-%m-%d"],
         widget=forms.DateInput(
+            format="%d/%m/%Y",
             attrs={
-                "type": "date",
-                "class": "w-full rounded border px-3 py-2",
-            }
+                "class": "w-full rounded border px-3 py-2 text-gray-800 bg-white datepicker-input",
+                "placeholder": "dd/mm/aaaa",
+                "autocomplete": "off",
+            },
         ),
     )
 

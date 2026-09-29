@@ -434,27 +434,30 @@ class HiperparametrosLSTM:
 
     def __init__(
         self,
-        epochs: int = 50,
-        batch_size: int = 16,
-        lr: float = 0.001,
+        epochs: int = 35,
+        batch_size: int = 32,
+        lr: float = 0.002,
+        patience: int = 7,
     ) -> None:
         """
         Inicializa los hiperparámetros del optimizador y del ciclo de entrenamiento.
 
         Args:
-            epochs (int, opcional): Número de épocas.
+            epochs (int, opcional): Número de épocas máximas.
             batch_size (int, opcional): Tamaño de lote.
             lr (float, opcional): Tasa de aprendizaje inicial.
+            patience (int, opcional): Épocas de espera para parada temprana (early stopping).
         """
         self.epochs = epochs
         self.batch_size = batch_size
         self.lr = lr
+        self.patience = patience
 
 
 class LSTMLoteria(nn.Module):
     """
-    Red Neuronal Recurrente basada en LSTM para predecir probabilidades multietiqueta
-    de aparición de números individuales basándose en una secuencia de sorteos anteriores.
+    Red Neuronal Recurrente bidireccional basada en LSTM con mecanismo de atención
+    temporal y capas normalizadas para predecir probabilidades multietiqueta de números.
     """
 
     def __init__(
@@ -462,47 +465,65 @@ class LSTMLoteria(nn.Module):
         input_size: int,
         hidden_size: int = 128,
         num_capas: int = 2,
-        dropout: float = 0.3,
+        dropout: float = 0.2,
     ) -> None:
         """
-        Inicializa las capas LSTM y lineales de la red.
+        Inicializa las capas LSTM bidireccionales, atención temporal y lineales.
 
         Args:
-            input_size (int): Rango máximo de números posibles en el sorteo (dimensión del input/output).
-            hidden_size (int, opcional): Número de neuronas en las capas ocultas.
+            input_size (int): Rango máximo de números posibles en el sorteo.
+            hidden_size (int, opcional): Neuronas en las capas ocultas recurrentes.
             num_capas (int, opcional): Capas LSTM apiladas.
             dropout (float, opcional): Coeficiente de regularización dropout.
         """
         super().__init__()
         self.input_size = input_size
+        self.hidden_size = hidden_size
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_capas,
             batch_first=True,
+            bidirectional=True,
             dropout=dropout if num_capas > 1 else 0.0,
         )
-        self.fc_hidden = nn.Linear(hidden_size, hidden_size // 2)
-        self.relu = nn.ReLU()
+        self.attn = nn.Linear(hidden_size * 2, 1)
+        self.fc_hidden = nn.Linear(hidden_size * 2, hidden_size)
+        self.ln = nn.LayerNorm(hidden_size)
+        self.act = nn.GELU()
         self.dropout = nn.Dropout(dropout)
-        self.fc_output = nn.Linear(hidden_size // 2, input_size)
-        self.sigmoid = nn.Sigmoid()
+        self.fc_output = nn.Linear(hidden_size, input_size)
 
     def forward(self, x_input: torch.Tensor) -> torch.Tensor:
         """
-        Ejecuta la propagación hacia adelante (forward pass) de la red.
+        Ejecuta la propagación hacia adelante (forward pass) retornando logits no acotados.
+        Diseñado para entrenamiento numéricamente estable con BCEWithLogitsLoss.
 
         Args:
-            x_input (torch.Tensor): Tensores tridimensionales de entrada (Lote, Ventana, Números).
+            x_input (torch.Tensor): Tensores de entrada (Lote, Ventana, Números).
 
         Returns:
-            torch.Tensor: Vector con probabilidades sigmoides de salida para cada número.
+            torch.Tensor: Logits de salida para cada número.
         """
         lstm_out, _ = self.lstm(x_input)
-        last_out = lstm_out[:, -1, :]
-        hidden = self.relu(self.fc_hidden(last_out))
+        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)
+        context = torch.sum(attn_weights * lstm_out, dim=1)
+        hidden = self.act(self.ln(self.fc_hidden(context)))
         hidden = self.dropout(hidden)
-        return self.sigmoid(self.fc_output(hidden))
+        return self.fc_output(hidden)
+
+    def predecir_probabilidades(self, x_input: torch.Tensor) -> torch.Tensor:
+        """
+        Calcula las probabilidades calibradas en el rango [0, 1] aplicando sigmoid sobre los logits.
+
+        Args:
+            x_input (torch.Tensor): Tensores de entrada.
+
+        Returns:
+            torch.Tensor: Probabilidades estimadas para cada número en [0, 1].
+        """
+        logits = self.forward(x_input)
+        return torch.sigmoid(logits)
 
 
 def preparar_secuencias_lstm(
@@ -562,9 +583,11 @@ def entrenar_lstm(
     y_tensor: torch.Tensor,
     hp: Optional[HiperparametrosLSTM] = None,
     verbose: bool = False,
+    val_split: float = 0.15,
 ) -> None:
     """
-    Entrena los pesos del modelo LSTM utilizando retropropagación y pérdida BCELoss.
+    Entrena los pesos del modelo LSTM utilizando pérdida ponderada por desbalance (BCEWithLogitsLoss),
+    optimizador AdamW, corte de gradientes, scheduler y parada temprana (early stopping).
 
     Args:
         modelo (LSTMLoteria): Modelo a entrenar.
@@ -572,26 +595,117 @@ def entrenar_lstm(
         y_tensor (torch.Tensor): Tensores de salida objetivo.
         hp (HiperparametrosLSTM, opcional): Parámetros de épocas y optimizador.
         verbose (bool, opcional): Activa el reporte de pérdida por época en consola.
+        val_split (float, opcional): Proporción de datos reservada para validación.
     """
     if hp is None:
         hp = HiperparametrosLSTM()
-    dataset = TensorDataset(x_tensor, y_tensor)
-    loader = DataLoader(dataset, batch_size=hp.batch_size, shuffle=True)
-    criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(modelo.parameters(), lr=hp.lr)
-    modelo.train()
+
+    torch.manual_seed(42)
+    np.random.seed(42)
+
+    n_samples = len(x_tensor)
+    if n_samples < 20:
+        return
+
+    n_val = max(1, int(n_samples * val_split))
+    n_train = n_samples - n_val
+
+    x_train, y_train = x_tensor[:n_train], y_tensor[:n_train]
+    x_val, y_val = x_tensor[n_train:], y_tensor[n_train:]
+
+    train_ds = TensorDataset(x_train, y_train)
+    val_ds = TensorDataset(x_val, y_val)
+    train_loader = DataLoader(train_ds, batch_size=hp.batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=hp.batch_size, shuffle=False)
+
+    # Ponderación para clases positivas (corrige el sesgo de la baja probabilidad base)
+    max_num = modelo.input_size
+    cant_unos = y_tensor.sum(dim=1).mean().item()
+    if cant_unos < 1.0:
+        cant_unos = 6.0
+    pos_weight_val = max(1.0, (max_num - cant_unos) / cant_unos)
+    pos_weight = torch.tensor([pos_weight_val], dtype=torch.float32)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    optimizer = torch.optim.AdamW(modelo.parameters(), lr=hp.lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-5
+    )
+
+    best_val_loss = float("inf")
+    best_weights = None
+    patience_counter = 0
+
     for epoch in range(1, hp.epochs + 1):
-        total_loss = 0.0
-        for batch_x, batch_y in loader:
+        modelo.train()
+        total_train_loss = 0.0
+        for batch_x, batch_y in train_loader:
             optimizer.zero_grad()
-            pred = modelo(batch_x)
-            loss = criterion(pred, batch_y)
+            logits = modelo(batch_x)
+            loss = criterion(logits, batch_y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(modelo.parameters(), max_norm=1.0)
             optimizer.step()
-            total_loss += loss.item()
-        if verbose and (epoch % 10 == 0 or epoch == 1):
-            avg_loss = total_loss / len(loader)
-            print(f"  Época {epoch:3d}/{hp.epochs} | Loss: {avg_loss:.4f}")
+            total_train_loss += loss.item()
+
+        avg_train = total_train_loss / len(train_loader)
+
+        # Validación
+        modelo.eval()
+        total_val_loss = 0.0
+        with torch.no_grad():
+            for vx, vy in val_loader:
+                v_logits = modelo(vx)
+                v_loss = criterion(v_logits, vy)
+                total_val_loss += v_loss.item()
+
+        avg_val = total_val_loss / len(val_loader)
+        scheduler.step(avg_val)
+
+        if avg_val < best_val_loss:
+            best_val_loss = avg_val
+            best_weights = {k: v.cpu().clone() for k, v in modelo.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if verbose and (epoch % 5 == 0 or epoch == 1 or epoch == hp.epochs):
+            print(
+                f"  Época {epoch:2d}/{hp.epochs} | Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f} (mejor: {best_val_loss:.4f})"
+            )
+
+        if patience_counter >= hp.patience:
+            if verbose:
+                print(f"  Parada temprana (Early stopping) activada en época {epoch}.")
+            break
+
+    if best_weights is not None:
+        modelo.load_state_dict(best_weights)
+    modelo.eval()
+
+
+def predecir_distribucion_completa_lstm(
+    modelo: LSTMLoteria,
+    ultima_secuencia: torch.Tensor,
+) -> dict[int, float]:
+    """
+    Genera el mapa completo de probabilidades estimadas para todos los números posibles.
+
+    Args:
+        modelo (LSTMLoteria): Modelo de predicción entrenado.
+        ultima_secuencia (torch.Tensor): Última secuencia observada (1, Ventana, Rango).
+
+    Returns:
+        dict[int, float]: Diccionario con mapeo de cada número a su probabilidad calibrada.
+    """
+    modelo.eval()
+    with torch.no_grad():
+        if hasattr(modelo, "predecir_probabilidades"):
+            probs = modelo.predecir_probabilidades(ultima_secuencia).squeeze(0).cpu().numpy()
+        else:
+            out = modelo(ultima_secuencia).squeeze(0)
+            probs = (torch.sigmoid(out) if out.max() > 1.0 or out.min() < 0.0 else out).cpu().numpy()
+    return {i + 1: float(probs[i]) for i in range(modelo.input_size)}
 
 
 def predecir_tendencias_lstm(
@@ -600,7 +714,7 @@ def predecir_tendencias_lstm(
     top_k: int = 15,
 ) -> list[tuple[int, float]]:
     """
-    Genera predicciones de probabilidad de aparición para el próximo sorteo.
+    Genera predicciones ordenadas de probabilidad de aparición para los top_k números.
 
     Args:
         modelo (LSTMLoteria): Modelo de predicción entrenado.
@@ -610,11 +724,8 @@ def predecir_tendencias_lstm(
     Returns:
         list[tuple[int, float]]: Pares (Número, Probabilidad estimada).
     """
-    modelo.eval()
-    with torch.no_grad():
-        probs = modelo(ultima_secuencia).squeeze(0).numpy()
-    resultados = [(i + 1, float(probs[i])) for i in range(modelo.input_size)]
-    resultados.sort(key=lambda par: par[1], reverse=True)
+    dist = predecir_distribucion_completa_lstm(modelo, ultima_secuencia)
+    resultados = sorted(dist.items(), key=lambda par: par[1], reverse=True)
     return resultados[:top_k]
 
 
@@ -737,6 +848,7 @@ class ResultadoAnalisis:
         self.combinaciones_trios: list = []
         self.markov: dict[str, dict] = {}
         self.lstm_top: list[tuple[int, float]] = []
+        self.lstm_distribucion: dict[int, float] = {}
         self.frecuencias_especiales: pd.DataFrame = pd.DataFrame()
 
 
@@ -808,7 +920,8 @@ def ejecutar_analisis(
 
         if modelo is not None:
             ultima_seq = x_tensor[-1].unsqueeze(0)
-            resultado.lstm_top = predecir_tendencias_lstm(modelo, ultima_seq)
+            resultado.lstm_distribucion = predecir_distribucion_completa_lstm(modelo, ultima_seq)
+            resultado.lstm_top = predecir_tendencias_lstm(modelo, ultima_seq, top_k=15)
 
     if cols_esp:
         resultado.frecuencias_especiales = analizar_frecuencia_numeros(df, cols_esp)
@@ -951,9 +1064,11 @@ def generar_predicciones_semanales(
     limites = LIMITES_SORTEO[tipo_sorteo]
     cant_bolas = limites["cant_bolas"]
 
-    # 1. Obtener puntuación de LSTM
-    lstm_probs = {n: p for n, p in resultado.lstm_top} if resultado.lstm_top else {}
-    
+    # 1. Obtener puntuación completa de LSTM (todos los números, no sólo top 15)
+    lstm_probs = getattr(resultado, "lstm_distribucion", {})
+    if not lstm_probs and resultado.lstm_top:
+        lstm_probs = {n: p for n, p in resultado.lstm_top}
+
     # 2. Obtener puntuación de Tendencia
     tendencia_scores = {}
     if not resultado.indice_tendencia.empty:
@@ -961,8 +1076,6 @@ def generar_predicciones_semanales(
             tendencia_scores[int(row["Numero"])] = float(row["Indice"])
 
     # Normalizar puntuaciones para la estrategia híbrida
-    # LSTM: la probabilidad ya está en rango [0, 1]
-    # Tendencia: normalizar en rango [0, 1]
     max_t = max(tendencia_scores.values()) if tendencia_scores else 1.0
     min_t = min(tendencia_scores.values()) if tendencia_scores else 0.0
     rango_t = (max_t - min_t) if max_t != min_t else 1.0
@@ -971,17 +1084,26 @@ def generar_predicciones_semanales(
         num: (val - min_t) / rango_t for num, val in tendencia_scores.items()
     }
 
-    # Obtener pesos adaptativos
+    # Obtener pesos adaptativos históricos
     w_lstm, w_tendencia = obtener_pesos_adaptativos(tipo_sorteo)
 
-    # 3. Generar combinaciones para cada estrategia
+    # 3. Factor de coherencia Markoviana (paridad esperada según transición)
+    prob_impar = 0.5
+    markov_info = resultado.markov
+    if "paridad" in markov_info and "distribucion" in markov_info["paridad"]:
+        dist_p = markov_info["paridad"]["distribucion"]
+        if hasattr(dist_p, "get"):
+            prob_impar = float(dist_p.get("impar_dom", 0.5))
+
     todas_bolas_rango = list(range(limites["min_num"], limites["max_num"] + 1))
 
-    # C. Estrategia Híbrida Adaptativa
+    # C. Estrategia Híbrida Adaptativa optimizada con Markov
     def score_hibrido(n: int) -> float:
         p_lstm = lstm_probs.get(n, 0.0)
         p_tend = tendencia_norm.get(n, 0.5)
-        return float(w_lstm * p_lstm + w_tendencia * p_tend)
+        base = float(w_lstm * p_lstm + w_tendencia * p_tend)
+        bono_m = ((prob_impar - 0.5) * 0.06) if (n % 2 != 0) else ((0.5 - prob_impar) * 0.06)
+        return base + bono_m
 
     candidatos_hibridos = sorted(
         todas_bolas_rango,
@@ -989,10 +1111,9 @@ def generar_predicciones_semanales(
         reverse=True
     )
 
-    # Las 3 apuestas de un mismo boleto no deben repetir bolas entre sí.
-    # Además se optimiza la cobertura conjunta del boleto: la selección se limita
-    # al "pool" de los 3*cant_bolas números con mayor puntuación combinada (híbrida)
-    # y cada estrategia elige sus cant_bolas preferidas dentro de ese pool.
+    # Las 3 apuestas de un mismo boleto cubren bolas distintas del pool más fuerte.
+    # CORRECCIÓN ARQUITECTÓNICA: La combinación Híbrida Adaptativa (nuestro modelo estrella)
+    # ahora elige EN PRIMER LUGAR sus mejores bolas, asegurando la máxima calidad predictiva.
     pool_boleto = candidatos_hibridos[: cant_bolas * 3]
 
     def _elegir_desde_pool(
@@ -1006,33 +1127,51 @@ def generar_predicciones_semanales(
         return sorted(seleccion)
 
     restantes = pool_boleto
+    # 1. Híbrida Adaptativa elige primero del pool sus bolas favoritas
+    bolas_hibridas = _elegir_desde_pool({n: score_hibrido(n) for n in restantes}, restantes)
+    restantes = [n for n in restantes if n not in bolas_hibridas]
+    # 2. LSTM elige sus favoritas disponibles
     bolas_lstm = _elegir_desde_pool(lstm_probs, restantes)
     restantes = [n for n in restantes if n not in bolas_lstm]
+    # 3. Tendencia completa con sus preferidas del pool
     bolas_tendencia = _elegir_desde_pool(tendencia_scores, restantes)
-    restantes = [n for n in restantes if n not in bolas_tendencia]
-    bolas_hibridas = _elegir_desde_pool({n: score_hibrido(n) for n in restantes}, restantes)
 
-    # 4. Generar números especiales basados en frecuencias de aparición
-    # Para cada número especial, tomamos los más frecuentes en el histórico
+    # 4. Generar números especiales combinando frecuencia histórica y retraso temporal (urgencia)
     especiales_sugeridos: list[list[int]] = [[], [], []]
-    
     cfg = config_por_tipo(tipo_sorteo)
     cols_esp = cfg["numeros_especiales"]
 
     if cols_esp and not resultado.frecuencias_especiales.empty:
-        # Obtenemos los especiales más frecuentes según su conteo
-        freq_esp = resultado.frecuencias_especiales
-        esp_mas_comunes = []
-        for _, row in freq_esp.iterrows():
-            esp_mas_comunes.append((int(row["Numero"]), int(row["Frecuencia"])))
-        esp_mas_comunes.sort(key=lambda x: x[1], reverse=True)
-        
-        # Para Euromillones requerimos 2 estrellas por combinación. Para Gordo 1 clave.
+        freq_esp = resultado.frecuencias_especiales.copy()
         cant_esp = len(cols_esp)
 
-        # Repartimos los especiales más frecuentes entre las 3 apuestas sin repetir
-        # número entre ellas siempre que haya suficientes distintos.
-        esp_disponibles = [item[0] for item in esp_mas_comunes]
+        # Analizar retraso temporal / urgencia de los números especiales
+        retrasos_esp: dict[int, pd.Timestamp] = {}
+        df_esp = df_desde_orm(tipo_sorteo)
+        if not df_esp.empty:
+            for col_e in cols_esp:
+                if col_e in df_esp.columns:
+                    for _, r in df_esp[["Fecha", col_e]].dropna().iterrows():
+                        val = int(r[col_e])
+                        f_sorteo = r["Fecha"]
+                        if val not in retrasos_esp or f_sorteo > retrasos_esp[val]:
+                            retrasos_esp[val] = f_sorteo
+
+        fecha_ref = pd.to_datetime(date.today())
+        max_freq = freq_esp["Frecuencia"].max() if not freq_esp.empty else 1
+        esp_scores = []
+        for _, row in freq_esp.iterrows():
+            num = int(row["Numero"])
+            frec = int(row["Frecuencia"])
+            ult = retrasos_esp.get(num, fecha_ref - pd.Timedelta(days=120))
+            dias_sin_salir = max(0, (fecha_ref - ult).days)
+            # Puntuación equilibrada: 55% retraso temporal (urgencia) + 45% frecuencia histórica
+            score = (dias_sin_salir / 60.0) * 0.55 + (frec / max_freq) * 0.45
+            esp_scores.append((num, score))
+
+        esp_scores.sort(key=lambda x: x[1], reverse=True)
+        esp_disponibles = [item[0] for item in esp_scores]
+
         esp_usados: set[int] = set()
         for i in range(3):
             seleccion = []
@@ -1042,7 +1181,6 @@ def generar_predicciones_semanales(
                     seleccion.append(n)
                     if len(seleccion) == cant_esp:
                         break
-            # Si no hay suficientes especiales distintos, se reutilizan los más frecuentes
             if len(seleccion) < cant_esp:
                 for n in esp_disponibles:
                     if n not in seleccion:

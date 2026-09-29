@@ -1,5 +1,5 @@
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from typing import Any
 
 from django.test import TestCase
@@ -214,7 +214,7 @@ class AnalyticsServicesTestCase(TestCase):
         self.assertEqual(row_5["Dias Min"], 9)
         self.assertEqual(row_5["Dias Max"], 10)
 
-    @patch("django.contrib.auth.authenticate")
+    @patch("analytics.views.authenticate")
     def test_login_open_redirect_protection(self, mock_auth: Any) -> None:
         """
         Verifica que la vista de login neutralice intentos de Open Redirect
@@ -223,6 +223,11 @@ class AnalyticsServicesTestCase(TestCase):
         from django.contrib.auth.models import AnonymousUser
         mock_user = MagicMock()
         mock_user.is_authenticated = True
+        mock_user.backend = "django.contrib.auth.backends.ModelBackend"
+        mock_user.pk = 1
+        mock_user.id = 1
+        mock_user._meta.pk.value_to_string.return_value = "1"
+        mock_user.get_session_auth_hash.return_value = "hash123"
         mock_auth.return_value = mock_user
 
         # Intentar login con next malicioso externo
@@ -230,10 +235,10 @@ class AnalyticsServicesTestCase(TestCase):
             "/login/?next=https://malicious-phishing.com",
             {"username": "admin", "password": "securepassword"}
         )
-        # Debe redirigir al dashboard interno, NUNCA al dominio externo
+        # Debe redirigir al dashboard interno (/), NUNCA al dominio externo
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("malicious-phishing.com", response.url)
-        self.assertEqual(response.url, "/login/")  # Client redirects safely or returns internal URL
+        self.assertEqual(response.url, "/")
 
     def test_logout_redirects_safely(self) -> None:
         """
@@ -329,4 +334,70 @@ class AnalyticsServicesTestCase(TestCase):
         mock_torch_load.assert_called_once()
         _, kwargs = mock_torch_load.call_args
         self.assertTrue(kwargs.get("weights_only", False))
+
+    def test_fecha_formato_dd_mm_yyyy(self) -> None:
+        """
+        Verifica que el campo de fecha en el formulario se inicialice y renderice
+        en formato dd/mm/yyyy (evitando mm/dd/yyyy nativo) y acepte entradas válidas.
+        """
+        from analytics.forms import construir_formulario_sorteo
+        FormClass = construir_formulario_sorteo("primitiva")
+        form = FormClass()
+        html_fecha = str(form["fecha"])
+
+        # Comprobar que no es tipo date crudo y que tiene placeholder y clase de datepicker
+        self.assertIn('placeholder="dd/mm/aaaa"', html_fecha)
+        self.assertIn("datepicker-input", html_fecha)
+        hoy_str = date.today().strftime("%d/%m/%Y")
+        self.assertIn(f'value="{hoy_str}"', html_fecha)
+
+        # Probar validación con fecha dd/mm/yyyy
+        datos = {
+            "tipo_sorteo": "primitiva",
+            "fecha": "15/10/2026",
+            "bola_1": 1,
+            "bola_2": 2,
+            "bola_3": 3,
+            "bola_4": 4,
+            "bola_5": 5,
+            "bola_6": 6,
+            "especial_1": 7,
+            "especial_2": 0,
+        }
+        form_valido = FormClass(data=datos)
+        self.assertTrue(form_valido.is_valid(), form_valido.errors)
+        self.assertEqual(form_valido.cleaned_data["fecha"], date(2026, 10, 15))
+
+    def test_lstm_arquitectura_y_probabilidades(self) -> None:
+        """
+        Verifica la red neuronal LSTMLoteria, sus salidas calibradas de probabilidad
+        y la obtención del mapa completo de probabilidades.
+        """
+        import torch
+        from analytics.ml_services import (
+            LSTMLoteria,
+            predecir_distribucion_completa_lstm,
+            predecir_tendencias_lstm,
+        )
+
+        modelo = LSTMLoteria(input_size=49, hidden_size=64)
+        x_dummy = torch.randn(1, 10, 49)
+
+        # Inferencia de probabilidades calibradas
+        probs = modelo.predecir_probabilidades(x_dummy)
+        self.assertEqual(probs.shape, (1, 49))
+        self.assertTrue(torch.all(probs >= 0.0) and torch.all(probs <= 1.0))
+
+        # Distribución completa
+        dist = predecir_distribucion_completa_lstm(modelo, x_dummy)
+        self.assertEqual(len(dist), 49)
+        self.assertIn(1, dist)
+        self.assertIn(49, dist)
+
+        # Top 15 tendencias
+        top15 = predecir_tendencias_lstm(modelo, x_dummy, top_k=15)
+        self.assertEqual(len(top15), 15)
+        # Verificar que esté ordenado descendentemente
+        self.assertGreaterEqual(top15[0][1], top15[1][1])
+
 

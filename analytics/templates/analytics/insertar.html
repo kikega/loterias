@@ -39,8 +39,11 @@
                         {{ form.tipo_sorteo }}
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-600 mb-1">Fecha</label>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Fecha (dd/mm/aaaa)</label>
                         {{ form.fecha }}
+                        {% for error in form.fecha.errors %}
+                        <p class="text-red-500 text-xs mt-1">{{ error }}</p>
+                        {% endfor %}
                     </div>
                 </div>
 

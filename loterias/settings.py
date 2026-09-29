@@ -123,6 +123,14 @@ TIME_ZONE = "Europe/Madrid"
 USE_I18N = True
 USE_TZ = True
 
+DATE_INPUT_FORMATS = [
+    "%d/%m/%Y",
+    "%d-%m-%Y",
+    "%d/%m/%y",
+    "%Y-%m-%d",
+]
+DATE_FORMAT = "d/m/Y"
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
